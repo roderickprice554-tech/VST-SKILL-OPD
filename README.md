@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🎬 Video Streaming Thinking (VST)
+# 🎬 Video Streaming Thinking
 
 ### VideoLLMs Can Watch and Think Simultaneously
 
