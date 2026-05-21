@@ -9,6 +9,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)]()
 [![Model 3/7/32B](https://img.shields.io/badge/🤗%20Model-HuggingFace-yellow?style=flat-square)](https://huggingface.co/Catalan258/VST-7B)
 [![Training Data](https://img.shields.io/badge/🤗%20Training%20Data-HuggingFace-yellow?style=flat-square)](https://huggingface.co/datasets/Catalan258/VST-Training-Data)
+[![Training Data MS](https://img.shields.io/badge/🤖%20Training%20Data-ModelScope-624aff?style=flat-square)](https://www.modelscope.cn/datasets/catalan/VST-Training-Data)
 
 </div>
 
@@ -36,12 +37,12 @@ Instead of deferring all reasoning until a user query arrives, VST continuously 
 
 ## 📦 Training Data
 
-We release the full training data used for both SFT and RL stages on HuggingFace:
+We release the full training data used for both SFT and RL stages on HuggingFace and ModelScope:
 
-| **Dataset** | **Description** |
-|---|---|
-| [VST-Training-Data/vst_sft_data](https://huggingface.co/datasets/Catalan258/VST-Training-Data/tree/main/vst_sft_data) | SFT data including video-text pairs from multiple sources |
-| [VST-Training-Data/vst_rl_data](https://huggingface.co/datasets/Catalan258/VST-Training-Data/tree/main/vst_rl_data) | RL data for reinforcement learning stage |
+| **Dataset** | **HuggingFace** | **ModelScope** | **Description** |
+|---|---|---|---|
+| vst_sft_data | [🤗 Link](https://huggingface.co/datasets/Catalan258/VST-Training-Data/tree/main/vst_sft_data) | [🤖 Link](https://www.modelscope.cn/datasets/catalan/VST-Training-Data/files/vst_sft_data) | SFT data including video-text pairs from multiple sources |
+| vst_rl_data | [🤗 Link](https://huggingface.co/datasets/Catalan258/VST-Training-Data/tree/main/vst_rl_data) | [🤖 Link](https://www.modelscope.cn/datasets/catalan/VST-Training-Data/files/vst_rl_data) | RL data for reinforcement learning stage |
 
 ## 📅 TODO
 - [x] Release the paper.
