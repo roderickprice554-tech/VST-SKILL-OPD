@@ -8,6 +8,7 @@
 [![arXiv](https://img.shields.io/badge/arXiv-Paper-b31b1b?style=flat-square&logo=arxiv)](https://arxiv.org/abs/2603.12262)
 [![Homepage](https://img.shields.io/badge/Homepage-project-orange.svg?logo=googlehome)](https://1ranguan.github.io/VST/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)]()
+
 [![Model 3/7/32B](https://img.shields.io/badge/🤗%20Model-HuggingFace-yellow?style=flat-square)](https://huggingface.co/Catalan258/VST-7B)
 [![Training Data](https://img.shields.io/badge/🤗%20Training%20Data-HuggingFace-yellow?style=flat-square)](https://huggingface.co/datasets/Catalan258/VST-Training-Data)
 [![Training Data MS](https://img.shields.io/badge/🤖%20Training%20Data-ModelScope-624aff?style=flat-square)](https://www.modelscope.cn/datasets/catalan/VST-Training-Data)
