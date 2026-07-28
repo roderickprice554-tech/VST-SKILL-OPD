@@ -1,0 +1,11 @@
+# Requirements for vLLM-accelerated evaluation pipeline
+# Install with: pip install -r requirements_eval.txt
+
+vllm==0.11.0
+transformers>=4.50.0
+torch>=2.5.0
+torchvision>=0.20.0
+flash-attn>=2.7.0
+decord==0.6.0
+openpyxl>=3.1.0
+numpy>=2.0.0
