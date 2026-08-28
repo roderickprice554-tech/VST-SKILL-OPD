@@ -168,3 +168,14 @@ def test_arbitrary_action_is_rejected():
 
     with pytest.raises(ValueError, match="unsupported action"):
         command_for("run_full_sft")
+
+
+def test_stage_scripts_exist_and_forbid_full_training():
+    for action in ("prepare_vst", "audit_vst", "prepare_ovo", "run_smoke"):
+        script = Path(command_for(action)[-1])
+        assert script.is_file(), f"missing allow-listed script: {script}"
+        text = script.read_text(encoding="utf-8")
+        assert "--num_train_epochs 1" not in text
+        assert "VST-RL/run.sh" not in text
+        assert "sft_selected" not in text
+        assert "rl_selected" not in text
