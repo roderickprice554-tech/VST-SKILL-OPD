@@ -1,0 +1,112 @@
+[
+  {
+    "oid": "1ef325f1b111266a6b26e0196871bd78baa8c2f3",
+    "path": ".gitattributes",
+    "size": 2461
+  },
+  {
+    "oid": "4dca3263b9d126106bb917a44fb890e5adcd8ba8",
+    "path": "README.md",
+    "size": 1220
+  },
+  {
+    "oid": "bbb96c48be839ca06e0202dd00770b41e53e3670",
+    "path": "chunked_videos.tar.partaa",
+    "size": 10737418240
+  },
+  {
+    "oid": "920c2c846fc5827d65b41139623efa411b155747",
+    "path": "chunked_videos.tar.partab",
+    "size": 10737418240
+  },
+  {
+    "oid": "d97dc9619aa5ee9fcf0f21aeca5be14966cb02d7",
+    "path": "chunked_videos.tar.partac",
+    "size": 10737418240
+  },
+  {
+    "oid": "29531870548797d9d24e7aeff2ca78e50dcd8ffa",
+    "path": "chunked_videos.tar.partad",
+    "size": 10737418240
+  },
+  {
+    "oid": "a64eead03ae04ee72b26aa499cc5afd954f2e28c",
+    "path": "chunked_videos.tar.partae",
+    "size": 10737418240
+  },
+  {
+    "oid": "ea89cfb2542092b04fadb81560ee1ffc34a90c3a",
+    "path": "chunked_videos.tar.partaf",
+    "size": 10737418240
+  },
+  {
+    "oid": "dcd5debd715fdf02ba57d0a84969cb1287c8a987",
+    "path": "chunked_videos.tar.partag",
+    "size": 10737418240
+  },
+  {
+    "oid": "493dac109e48892afce521f554ca638c1ae553d3",
+    "path": "chunked_videos.tar.partah",
+    "size": 10737418240
+  },
+  {
+    "oid": "c33b3241a31b61fd6497675a52e9d45b1b437c55",
+    "path": "chunked_videos.tar.partai",
+    "size": 10737418240
+  },
+  {
+    "oid": "ffe03ca8d70f8762427e9dadd6953367f66b0146",
+    "path": "chunked_videos.tar.partaj",
+    "size": 10737418240
+  },
+  {
+    "oid": "537491dad4f7bcae34ad18edaf34790cbb4d14a1",
+    "path": "chunked_videos.tar.partak",
+    "size": 10737418240
+  },
+  {
+    "oid": "6b3bdf248e77ce52b3e96bb4076e850531af4952",
+    "path": "chunked_videos.tar.partal",
+    "size": 10737418240
+  },
+  {
+    "oid": "7ed4096db5cb34cb0fa0bc28bf4b0da617c5cb7c",
+    "path": "chunked_videos.tar.partam",
+    "size": 10737418240
+  },
+  {
+    "oid": "12348e845b50cdecf63d9722f9323ced141e3fe5",
+    "path": "chunked_videos.tar.partan",
+    "size": 10737418240
+  },
+  {
+    "oid": "480f49c64fe1020b61bf1ca6111ebc0c25c5532f",
+    "path": "chunked_videos.tar.partao",
+    "size": 2953297920
+  },
+  {
+    "oid": "342fa3772e7521bdd2984b12445c2425deacceb9",
+    "path": "src_videos.tar.partaa",
+    "size": 10737418240
+  },
+  {
+    "oid": "38f1cd7d9f54b6e1464eca47c0106927cacb8cc5",
+    "path": "src_videos.tar.partab",
+    "size": 10737418240
+  },
+  {
+    "oid": "2d9879aa0f90c3e00c8dc56ce3957afa99d15b43",
+    "path": "src_videos.tar.partac",
+    "size": 10737418240
+  },
+  {
+    "oid": "01e54c0cdd93a2e0e677cdd590928b044e3c267d",
+    "path": "src_videos.tar.partad",
+    "size": 10737418240
+  },
+  {
+    "oid": "a30b1d4b2a44e31d41ad9aae37554a7a24b8b9e1",
+    "path": "src_videos.tar.partae",
+    "size": 3392071680
+  }
+]
