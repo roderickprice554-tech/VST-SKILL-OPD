@@ -15,6 +15,16 @@ def test_ego4d_is_excluded_even_when_missing(tmp_path):
     assert classify_video("Ego4D/full_scale/a.mp4", tmp_path) == "excluded_ego4d"
 
 
+def test_nested_ego4d_path_is_excluded_case_insensitively(tmp_path):
+    video = "LLaVA-Video-178K/source/EgO4D/a.mp4"
+    assert classify_video(video, tmp_path) == "excluded_ego4d"
+
+
+def test_ego4d_substring_is_not_treated_as_a_path_segment(tmp_path):
+    video = "LLaVA-Video-178K/source/notego4d/a.mp4"
+    assert classify_video(video, tmp_path) == "missing_non_ego4d"
+
+
 def test_existing_non_ego4d_media_is_ready(tmp_path):
     path = tmp_path / "hdvila/a.mp4"
     path.parent.mkdir()

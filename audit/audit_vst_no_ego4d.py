@@ -21,7 +21,7 @@ def path_prefix(video: str) -> str:
 
 def classify_video(video: str, media_root: Path) -> str:
     normalized = video.replace("\\", "/")
-    if normalized.startswith("Ego4D/"):
+    if "ego4d" in (segment.casefold() for segment in normalized.split("/")):
         return "excluded_ego4d"
     if (media_root / normalized).is_file():
         return "ready"
