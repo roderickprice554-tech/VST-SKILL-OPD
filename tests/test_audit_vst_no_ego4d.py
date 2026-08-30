@@ -1,8 +1,10 @@
 import sys
+import json
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "audit"))
 
+import audit_vst_no_ego4d as audit
 from audit_vst_no_ego4d import classify_video, path_prefix
 
 
@@ -37,3 +39,31 @@ def test_missing_non_ego4d_media_is_blocking(tmp_path):
         classify_video("LLaVA-Video-178K/a.mp4", tmp_path)
         == "missing_non_ego4d"
     )
+
+
+def test_seek_index_uses_utf8_byte_offsets(tmp_path):
+    jsonl = tmp_path / "sample_with_seeks.jsonl"
+    rows = [
+        json.dumps({"text": "ascii"}, ensure_ascii=False) + "\n",
+        json.dumps({"text": "视频"}, ensure_ascii=False) + "\n",
+        json.dumps({"text": "tail"}, ensure_ascii=False) + "\n",
+    ]
+    jsonl.write_text("".join(rows), encoding="utf-8")
+    assert hasattr(audit, "write_seek_index")
+    seek_path = audit.write_seek_index(jsonl)
+    assert seek_path.name == "sample_seeks.jsonl"
+    assert json.loads(seek_path.read_text(encoding="utf-8")) == [
+        0,
+        len(rows[0].encode("utf-8")),
+        len((rows[0] + rows[1]).encode("utf-8")),
+    ]
+
+
+def test_non_ego4d_missing_prefixes_block_audit_completion():
+    assert hasattr(audit, "blocking_missing_prefixes")
+    assert audit.blocking_missing_prefixes(
+        {"missing_prefixes": ["Ego4D/", "LLaVA-Video-178K/"]}
+    ) == ("LLaVA-Video-178K/",)
+    assert audit.blocking_missing_prefixes(
+        {"missing_prefixes": ["Ego4D/"]}
+    ) == ()

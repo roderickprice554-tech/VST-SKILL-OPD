@@ -38,6 +38,33 @@ def atomic_json(path: Path, value: dict) -> None:
     os.replace(temporary, path)
 
 
+def write_seek_index(jsonl_path: Path) -> Path:
+    suffix = "_with_seeks.jsonl"
+    if not jsonl_path.name.endswith(suffix):
+        raise ValueError(f"expected *{suffix}: {jsonl_path}")
+    seek_path = jsonl_path.with_name(
+        jsonl_path.name[: -len(suffix)] + "_seeks.jsonl"
+    )
+    offsets = []
+    offset = 0
+    with jsonl_path.open("rb") as handle:
+        for line in handle:
+            offsets.append(offset)
+            offset += len(line)
+    atomic_json(seek_path, offsets)
+    return seek_path
+
+
+def blocking_missing_prefixes(report: dict) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            prefix
+            for prefix in report.get("missing_prefixes", [])
+            if prefix.casefold() != "ego4d/"
+        )
+    )
+
+
 def audit_sft(source_root: Path, media_root: Path, output_root: Path):
     summaries = []
     missing = Counter()
@@ -73,6 +100,7 @@ def audit_sft(source_root: Path, media_root: Path, output_root: Path):
                     continue
                 out.write(line)
                 kept += 1
+        write_seek_index(output)
         summaries.append(
             {"file": source.name, "total": total, "kept": kept, "excluded_ego4d": excluded}
         )
@@ -117,8 +145,9 @@ def audit_rl(source: Path, media_root: Path, output: Path):
 def main() -> int:
     existing_report = MANIFEST_ROOT / "audit.json"
     if existing_report.is_file():
-        atomic_json(AUDIT_PATH, json.loads(existing_report.read_text(encoding="utf-8")))
-        return 0
+        report = json.loads(existing_report.read_text(encoding="utf-8"))
+        atomic_json(AUDIT_PATH, report)
+        return 2 if blocking_missing_prefixes(report) else 0
 
     temporary = MANIFEST_ROOT.with_name(MANIFEST_ROOT.name + f".tmp.{os.getpid()}")
     temporary.mkdir(parents=True, exist_ok=False)
@@ -151,7 +180,7 @@ def main() -> int:
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
-    return 0
+    return 2 if blocking_missing_prefixes(report) else 0
 
 
 if __name__ == "__main__":
