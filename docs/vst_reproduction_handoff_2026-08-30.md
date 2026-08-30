@@ -504,3 +504,32 @@ df -h .
 10. 下一步的只读检查和安全动作是什么？
 
 若新对话无法从本文准确回答这些问题，应先补充交接信息，不要启动训练。
+
+## 14. 2026-08-31 训练优先编排更新
+
+用户已确认训练优先，并授权在审计与 smoke 通过后自动启动固定的 Qwen2.5-VL-3B-Instruct 两卡 SFT。OVO 只能使用未分配给训练的整张物理 GPU，不能使用训练卡上的剩余显存。
+
+新增提交：
+
+- `56ff9a4`：训练优先编排设计；
+- `d0a3140`：测试驱动实施计划；
+- `eb23192`：训练优先状态机与 30 分钟轮询；
+- `9c82326`：非 Ego4D seek 与缺失媒体门禁；
+- `9e5f683`：修复 OVO 包装器重试间隙被误判、重复启动；
+- `84b6029`：真实数据解码与 3B 权重加载 smoke gate；
+- `81ce0b9`：固定 3B、2×A100、1 epoch、有效 global batch 128 的 SFT launcher；
+- `4b9ea30`：完整 3,035 条 OVO 验证和 Qwen 3B 基线评测包装器。
+
+最新验证（2026-08-31 00:23 Asia/Shanghai）：
+
+- `pytest tests -q`：43 passed；
+- 所有修改的 Bash 包装器通过 `bash -n`；
+- 所有修改的 Python 文件通过 `py_compile`；
+- DeepSpeed 0.17.1 自带 `autotuning/config_templates/template_zero3.json` 是新增 ZeRO-3 配置的记录来源；
+- 30 分钟监控主 PID：2507143；`sleep 1800` 子 PID：2507176；
+- VST 准备仍在运行：包装器 PID 2374820，`setup_dataset.py` PID 2374822；尚无 `vst_prepare.complete`；
+- OVO 单下载链仍在运行，控制器 dry-run 识别 PID 2507154；9/22 固定文件完整；
+- 当前无 smoke、SFT 或 OVO 推理进程；两张 GPU 空闲；
+- 文件系统剩余约 5.5TB。
+
+自动顺序现为：VST 准备完成 → 非 Ego4D 审计/seek → 因果 smoke → 两卡 SFT；OVO 下载独立维护，SFT 完成且完整 OVO 校验通过后，才在空闲整卡运行 Qwen 3B 基线评测。任一门禁失败都会停止推进并保留日志，不会绕过。
