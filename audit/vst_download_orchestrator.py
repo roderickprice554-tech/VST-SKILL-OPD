@@ -195,6 +195,24 @@ def directory_bytes(path: Path) -> int:
     return total
 
 
+def matches_process(kind: str, decoded: list[str]) -> bool:
+    if kind == "vst":
+        return (
+            any(arg.endswith("/modelscope") for arg in decoded)
+            and "download" in decoded
+            and "catalan/VST-Training-Data" in decoded
+        )
+    if kind == "ovo":
+        wrapper = str(ROOT / "audit/download_ovobench_official.sh")
+        return wrapper in decoded or (
+            any(arg.endswith("/hf") for arg in decoded)
+            and "download" in decoded
+            and "JoeLeelyf/OVO-Bench" in decoded
+        )
+    fragment = str(ROOT / f"audit/{kind}.sh")
+    return fragment in decoded
+
+
 def find_process(kind: str) -> tuple[Optional[int], bool]:
     for proc in Path("/proc").iterdir():
         if not proc.name.isdigit() or int(proc.name) == os.getpid():
@@ -204,22 +222,7 @@ def find_process(kind: str) -> tuple[Optional[int], bool]:
             decoded = [arg.decode(errors="replace") for arg in args if arg]
         except (FileNotFoundError, PermissionError, ProcessLookupError):
             continue
-        if kind == "vst":
-            matches = (
-                any(arg.endswith("/modelscope") for arg in decoded)
-                and "download" in decoded
-                and "catalan/VST-Training-Data" in decoded
-            )
-        elif kind == "ovo":
-            matches = (
-                any(arg.endswith("/hf") for arg in decoded)
-                and "download" in decoded
-                and "JoeLeelyf/OVO-Bench" in decoded
-            )
-        else:
-            fragment = str(ROOT / f"audit/{kind}.sh")
-            matches = fragment in decoded
-        if not matches:
+        if not matches_process(kind, decoded):
             continue
         try:
             state = (proc / "stat").read_text().split()[2]

@@ -184,6 +184,15 @@ def test_stopped_ovo_download_is_maintained_while_vst_is_preparing():
     assert orchestrator.ovo_download_decision(observation) == "resume_ovo"
 
 
+def test_ovo_wrapper_counts_as_live_during_retry_wait():
+    assert hasattr(orchestrator, "matches_process")
+    decoded = [
+        "/usr/bin/bash",
+        "/home/bujunru/vlm-repro/VST-full-reproduction/audit/download_ovobench_official.sh",
+    ]
+    assert orchestrator.matches_process("ovo", decoded) is True
+
+
 def test_inventory_report_requires_every_exact_file(tmp_path):
     (tmp_path / "a.bin").write_bytes(b"abc")
     report = inventory_report(
