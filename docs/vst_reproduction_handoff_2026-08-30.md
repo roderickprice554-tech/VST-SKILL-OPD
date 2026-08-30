@@ -1,6 +1,6 @@
 # VST 3B 非 Ego4D 两阶段复现实验交接文档
 
-更新时间：2026-08-30（Asia/Shanghai）
+更新时间：2026-08-30 20:41（Asia/Shanghai）
 目标读者：接手该任务的新 Codex 对话
 执行位置：远程服务器 `bujunru@10.130.140.10:52234`，项目文件不在本机
 
@@ -12,7 +12,85 @@
 
 不得把最终结果描述成“完整官方数据复现”。SFT 和 RL 都要排除任意路径层级中名为 `ego4d`（大小写不敏感）的媒体引用，包括嵌套在 `LLaVA-Video-178K/.../ego4d/...` 中的样本。
 
-当前只在下载数据，尚未运行正式 smoke、SFT、RL 或完整 OVO 评测。不要根据 OVO 测试结果选择 checkpoint、prompt 或超参数。
+VST 固定下载清单已经完成，当前正在拼接、校验和解压训练媒体；OVO 下载仍暂停。尚未运行正式 smoke、SFT、RL 或完整 OVO 评测。不要根据 OVO 测试结果选择 checkpoint、prompt 或超参数。
+
+### 1.1 当前进度摘要
+
+已完成：
+
+- 官方代码固定到 `f2500bb...` 并建立隔离 worktree；
+- VST 官方数据固定清单 197/197 文件按路径和大小验证完成；
+- 完整 SFT/RL 标注已到齐并完成规模/Ego4D 统计；
+- 非 Ego4D 路径段过滤逻辑及测试已提交；
+- 完整 OVO 3,035 条官方标注及哈希已确认；
+- 每小时下载/阶段编排器持续运行。
+
+当前运行：
+
+- `setup_dataset.py` 正在拼接、SHA256 校验和解压 VST 媒体；
+- OVO 下载进程仍为 SIGSTOP 暂停状态；
+- 正式训练尚未启动。
+
+未完成：
+
+- VST 媒体准备完成 marker；
+- 非 Ego4D 正式 manifest、seek 索引、媒体存在性和 split 泄漏终审；
+- 因果流式 smoke runner；
+- 3B 两卡 ZeRO-3 配置和正式 SFT launcher；
+- 完整 OVO 剩余 13 个文件、解压和 evaluator smoke；
+- SFT、SFT 后完整 OVO、RL、RL 后完整 OVO 和最终报告。
+
+### 1.2 关键数据目录
+
+```text
+VST 原始固定快照:
+/home/bujunru/vlm-repro/VST-full-reproduction/data/VST-Training-Data-official-5647583491c2
+
+正在准备的非 Ego4D 媒体根:
+/home/bujunru/vlm-repro/VST-full-reproduction/data/vst-training-media-no-ego4d
+
+非 Ego4D manifest 目标:
+/home/bujunru/vlm-repro/VST-full-reproduction/data_manifests/vst_no_ego4d_aaef152e
+
+OVO 原始固定快照:
+/home/bujunru/vlm-repro/VST-full-reproduction/data/OVO-Bench-official-fec29e3
+
+OVO 解压目标:
+/home/bujunru/vlm-repro/VST-full-reproduction/data/OVO-Bench-prepared-fec29e3
+
+完整 OVO 官方标注:
+/home/bujunru/vlm-repro/VST-full-reproduction/eval/eval_data/anno/eval/OVOBench/json
+```
+
+### 1.3 关键代码入口
+
+```text
+SFT 官方入口: VST-SFT/train.py、VST-SFT/run.sh
+RL 官方入口: VST-RL/run.sh、VST-RL/recurrent/、VST-RL/verl/
+官方评测入口: eval/eval_entry.py、eval/scripts/ovobench.sh
+流式 vLLM 评测: eval/vllm_eval/vllm_eval_engine_stream.py
+下载/阶段编排: audit/vst_download_orchestrator.py
+每小时循环: audit/run_vst_download_monitor.sh
+VST 准备: audit/prepare_vst_official.sh
+非 Ego4D 审计: audit/audit_vst_no_ego4d.py
+OVO 下载: audit/download_ovobench_official.sh
+OVO 准备: audit/prepare_ovobench_official.sh
+smoke 包装器: audit/run_vst_smoke.sh（其 Python runner 尚缺失）
+```
+
+### 1.4 远程连接
+
+本机 PowerShell：
+
+```powershell
+ssh -p 52234 bujunru@10.130.140.10
+```
+
+进入项目：
+
+```bash
+cd /home/bujunru/vlm-repro/VST-full-reproduction
+```
 
 ## 2. 实验目的与最终交付
 
@@ -55,7 +133,7 @@ ssh -p 52234 bujunru@10.130.140.10
 ```text
 /home/bujunru/vlm-repro/VST-full-reproduction
 branch: codex/vst-full-reproduction
-HEAD: 20ae7574d48c2db84b70c9686c7e3b4e11a3f033
+HEAD at status capture: e55e71abad0c9f0b8041322f7118a1bcd431bea0
 official base: f2500bb8699d59a13b96ec4229fc4cd643a96207
 origin: https://github.com/1ranGuan/VST.git
 ```
@@ -67,8 +145,9 @@ origin: https://github.com/1ranGuan/VST.git
 - `ceddaca`：VST/OVO 下载编排器
 - `e0189ce`：非 Ego4D 数据准备与审计框架
 - `20ae757`：修复嵌套 Ego4D 路径漏过滤
+- `e55e71a`：新增完整复现实验交接文档
 
-硬件：2 张 NVIDIA A100 PCIe 40GB。文件系统 `/dev/sdb1` 总计约 19TB；最近检查可用约 7.1TB，inode 充足。
+硬件：2 张 NVIDIA A100 PCIe 40GB。文件系统 `/dev/sdb1` 总计约 19TB；最近检查可用约 6.3TB，inode 充足。
 
 Conda 环境：
 
@@ -122,7 +201,7 @@ logs/vst_download_orchestrator/monitor.log
 logs/vst_training_data_modelscope.log
 ```
 
-下载器第一次遍历 198 个远端条目后有 28 个失败，编排器已经自动续传。接手时 VST 下载 PID 为 `1939700`；PID 可能变化，必须用命令匹配，不要依赖固定 PID。
+下载器第一次遍历 198 个远端条目后有 28 个失败，编排器自动续传后已经完成 VST 固定清单 197/197。VST 下载进程已退出；不要再使用旧 PID。当前进入媒体准备阶段。
 
 ### 5.3 非 Ego4D 过滤规则
 
@@ -148,11 +227,12 @@ eval/eval_data/anno/eval/OVOBench/json/
 
 ## 6. 当前正在运行的工作
 
-状态文件最近一次记录：
+状态文件最近一次记录（2026-08-30 20:02 Asia/Shanghai）：
 
 ```text
-state: vst_downloading
-VST: 170/197 文件按大小验证，1,338,023,936,168 bytes
+state: vst_preparing
+VST: 197/197 文件按路径和大小验证，complete=true
+VST directory bytes: 2,061,352,714,578（包含 parts、已拼接 zip 和缓存，不等于清单总量）
 OVO: 9/22 文件按大小验证，103,536,398,997 bytes
 OVO stopped: true
 ```
@@ -160,12 +240,13 @@ OVO stopped: true
 接手时进程：
 
 ```text
-VST downloader: PID 1939700（运行中，续传失败分片）
+VST prepare wrapper: PID 2374820
+setup_dataset.py: PID 2374822（运行中）
 OVO downloader: PID 1162909（SIGSTOP 暂停，STAT 应为 T/Tl）
 hourly monitor: PID 1237826
 ```
 
-当前阶段没有 `.complete` marker，说明 VST 下载、准备、审计、OVO 准备和 smoke 都尚未完成。
+当前没有 `.complete` marker。VST 下载清单虽已完成，但媒体准备仍在运行：`hdvila.zip` 已由分片拼接成约 540GB 文件；`setup_dataset.py` 已累计读取约 598.6GB、写入约 540.0GB，正在阻塞式磁盘 I/O/校验阶段。`prepare_vst.log` 为空是 Python 重定向输出缓冲造成的，不能据此判断失败。媒体目标目录暂时仍接近空目录，说明尚未进入或完成正式解压。
 
 检查最新状态：
 
@@ -174,7 +255,8 @@ cd /home/bujunru/vlm-repro/VST-full-reproduction
 /home/bujunru/.conda/envs/vision-se/bin/python audit/vst_download_orchestrator.py --status
 pgrep -af 'modelscope download.*catalan/VST-Training-Data'
 pgrep -af 'hf download.*JoeLeelyf/OVO-Bench'
-tail -f logs/vst_training_data_modelscope.log
+pgrep -af 'prepare_vst_official|setup_dataset.py'
+tail -f logs/vst_download_orchestrator/prepare_vst.log
 ```
 
 ## 7. 实验数据接口
@@ -356,17 +438,16 @@ VST snapshot complete
 
 ## 10. 未完成事项与推荐执行顺序
 
-1. 继续续传 VST 剩余 27 个固定清单文件；不要删除 partial/cache。
-2. 可以立即做“轻量并行审计”：解析全部标注、过滤 Ego4D、统计字段/重复/路径/跨 split；不要在下载期间 SHA256 大型归档或做最终媒体存在性结论，以免争抢 I/O 或误判暂存文件。用户尚未明确批准该方案，交接后可再次确认。**不要直接提前运行现有 `audit_vst_no_ego4d.py`**：它会把结果缓存到正式 `MANIFEST_ROOT`，而媒体尚未解压时会产生大量暂时性 missing。若并行审计，应实现独立的 annotation-only 输出目录，终审仍重新生成正式 manifest。
-3. VST 清单按文件大小全部通过后，补做 SHA256/归档完整性验证。
-4. 运行 `audit/prepare_vst_official.sh` 解压媒体；检查 `setup_dataset.py` 是否幂等且不尝试获取 Ego4D。
-5. 完成非 Ego4D SFT/RL manifest、seek 索引、唯一性、缺字段、空媒体、视频时长和 split 泄漏终审。
-6. 实现只读 smoke：数据读取、官方 FPS/chunk、截止时间、逐步因果 memory、三类 evaluator；smoke 只能用隔离的小样本验证流程，不能改变最终参数。
-7. 补齐并记录 3B、2×A100 的 SFT ZeRO-3 基础设施配置；实现 `run_vst_sft.sh`，固定 1 epoch、有效 global batch 128、独立输出目录和完整 provenance。
-8. 修改编排器为审计+smoke 通过后启动 SFT，并同时 `SIGCONT`/续传 OVO；OVO 下载应降低 CPU/磁盘优先级，若影响训练吞吐可暂停。
-9. SFT 结束后只按训练/独立验证选择并冻结 `sft_selected`；完整 OVO 只读测试一次。
-10. 完成两卡 RL 等价语义审计与 smoke，再从 `sft_selected` 启动 1 epoch 非 Ego4D RL。
-11. 用完全相同的完整 OVO manifest 和 evaluator 测试 `rl_selected`，写最终报告。
+1. 不要中断当前 `prepare_vst_official.sh`/`setup_dataset.py`。先观察进程、I/O 和目标目录增长，等待 `vst_prepare.complete`。
+2. `setup_dataset.py` 会逐个拼接、按 sidecar SHA256 校验并解压归档；VST 固定清单的路径/大小检查已完成，但归档级完整性仍以该脚本结果为准。
+3. 准备完成后运行正式非 Ego4D 审计，生成 SFT/RL manifest、seek 索引、唯一性、缺字段、空媒体、视频时长和 split 泄漏报告。**不要在媒体准备完成前运行现有 `audit_vst_no_ego4d.py`**：它会把暂时性 missing 缓存到正式 `MANIFEST_ROOT`。
+4. 实现只读 smoke：数据读取、官方 FPS/chunk、截止时间、逐步因果 memory、三类 evaluator；smoke 只能用隔离的小样本验证流程，不能改变最终参数。
+5. 补齐并记录 3B、2×A100 的 SFT ZeRO-3 基础设施配置；实现 `run_vst_sft.sh`，固定 1 epoch、有效 global batch 128、独立输出目录和完整 provenance。
+6. 修改编排器为审计+smoke 通过后启动 SFT，并同时 `SIGCONT`/续传 OVO；OVO 下载应降低 CPU/磁盘优先级，若影响训练吞吐可暂停。
+7. 完成 OVO 剩余 13/22 文件、拼接、解压和完整 3,035 条 manifest 校验。
+8. SFT 结束后只按训练/独立验证选择并冻结 `sft_selected`；完整 OVO 只读测试一次。
+9. 完成两卡 RL 等价语义审计与 smoke，再从 `sft_selected` 启动 1 epoch 非 Ego4D RL。
+10. 用完全相同的完整 OVO manifest 和 evaluator 测试 `rl_selected`，写最终报告。
 
 ## 11. 已知风险与必须披露的偏差
 
@@ -377,7 +458,7 @@ VST snapshot complete
 - 固定官方 OVO 标注为 3,035 条；780 条缓存是子集。
 - OVO forward 的官方评分不是 MCQ 字母评分，和用户最初描述有口径冲突。
 - 当前固定清单验证只检查路径和文件大小，最终报告需要 SHA256/归档验证。
-- 文件系统为共享盘；最近约 7.1TB 可用。下载和解压支持，但需要监控 ZeRO-3 checkpoint 占用，建议低于 2TB 时阻止下一阶段启动。
+- 文件系统为共享盘；最近约 6.3TB 可用。当前同时保留分片和已拼接 zip，因此准备期间占用会明显增长。需要持续监控解压和 ZeRO-3 checkpoint 占用，建议低于 2TB 时阻止下一阶段启动。
 
 ## 12. Git 与文件安全
 
