@@ -4,6 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "audit"))
 
 import json
+import vst_download_orchestrator as orchestrator
 
 from vst_download_orchestrator import (
     Decision,
@@ -49,7 +50,7 @@ def test_non_ego4d_missing_media_blocks_ovo():
     )
 
 
-def test_only_ego4d_missing_media_resumes_stopped_ovo():
+def test_only_ego4d_missing_media_allows_smoke_before_ovo():
     observation = Observation(
         vst_snapshot_complete=True,
         vst_prepare_complete=True,
@@ -58,20 +59,20 @@ def test_only_ego4d_missing_media_resumes_stopped_ovo():
         ovo_downloader_pid=99,
         ovo_stopped=True,
     )
-    assert decide(observation) == Decision("resume_ovo", "ovo_downloading")
+    assert decide(observation) == Decision("run_smoke", "smoke_running")
 
 
-def test_absent_incomplete_ovo_downloader_restarts():
+def test_absent_incomplete_ovo_does_not_block_smoke():
     observation = Observation(
         vst_snapshot_complete=True,
         vst_prepare_complete=True,
         vst_audit_complete=True,
         missing_prefixes=("Ego4D/",),
     )
-    assert decide(observation) == Decision("restart_ovo", "ovo_downloading")
+    assert decide(observation) == Decision("run_smoke", "smoke_running")
 
 
-def test_complete_ovo_is_prepared_before_smoke():
+def test_complete_ovo_does_not_block_smoke():
     observation = Observation(
         vst_snapshot_complete=True,
         vst_prepare_complete=True,
@@ -79,10 +80,10 @@ def test_complete_ovo_is_prepared_before_smoke():
         missing_prefixes=("Ego4D/",),
         ovo_snapshot_complete=True,
     )
-    assert decide(observation) == Decision("prepare_ovo", "ovo_preparing")
+    assert decide(observation) == Decision("run_smoke", "smoke_running")
 
 
-def test_smoke_runs_only_after_both_preparation_gates():
+def test_smoke_runs_after_vst_gates_even_when_ovo_is_prepared():
     observation = Observation(
         vst_snapshot_complete=True,
         vst_prepare_complete=True,
@@ -94,7 +95,7 @@ def test_smoke_runs_only_after_both_preparation_gates():
     assert decide(observation) == Decision("run_smoke", "smoke_running")
 
 
-def test_smoke_complete_is_terminal():
+def test_smoke_complete_starts_sft_when_two_gpus_are_idle():
     observation = Observation(
         vst_snapshot_complete=True,
         vst_prepare_complete=True,
@@ -103,8 +104,84 @@ def test_smoke_complete_is_terminal():
         ovo_snapshot_complete=True,
         ovo_prepare_complete=True,
         smoke_complete=True,
+        idle_gpu_ids=(0, 1),
     )
-    assert decide(observation) == Decision("none", "smoke_complete")
+    assert decide(observation) == Decision("run_sft", "sft_running")
+
+
+def test_smoke_does_not_wait_for_ovo_snapshot():
+    observation = Observation(
+        vst_snapshot_complete=True,
+        vst_prepare_complete=True,
+        vst_audit_complete=True,
+        missing_prefixes=("Ego4D/",),
+    )
+    assert decide(observation) == Decision("run_smoke", "smoke_running")
+
+
+def test_completed_smoke_starts_sft_before_ovo_preparation():
+    observation = Observation(
+        vst_snapshot_complete=True,
+        vst_prepare_complete=True,
+        vst_audit_complete=True,
+        missing_prefixes=("Ego4D/",),
+        smoke_complete=True,
+        idle_gpu_ids=(0, 1),
+    )
+    assert decide(observation) == Decision("run_sft", "sft_running")
+
+
+def test_live_sft_is_not_started_twice():
+    observation = Observation(
+        vst_snapshot_complete=True,
+        vst_prepare_complete=True,
+        vst_audit_complete=True,
+        missing_prefixes=("Ego4D/",),
+        smoke_complete=True,
+        sft_pid=4242,
+        training_gpu_ids=(0, 1),
+    )
+    assert decide(observation) == Decision("none", "sft_running")
+
+
+def test_sft_waits_until_two_whole_gpus_are_idle():
+    observation = Observation(
+        vst_snapshot_complete=True,
+        vst_prepare_complete=True,
+        vst_audit_complete=True,
+        missing_prefixes=("Ego4D/",),
+        smoke_complete=True,
+        idle_gpu_ids=(1,),
+    )
+    assert decide(observation) == Decision("none", "waiting_for_sft_gpus")
+
+
+def test_ovo_eval_waits_when_sft_owns_both_gpus():
+    observation = Observation(
+        vst_snapshot_complete=True,
+        vst_prepare_complete=True,
+        vst_audit_complete=True,
+        missing_prefixes=("Ego4D/",),
+        smoke_complete=True,
+        sft_complete=True,
+        ovo_snapshot_complete=True,
+        ovo_prepare_complete=True,
+        training_gpu_ids=(0, 1),
+        idle_gpu_ids=(),
+    )
+    assert decide(observation) == Decision("none", "waiting_for_ovo_gpu")
+
+
+def test_stopped_ovo_download_is_maintained_while_vst_is_preparing():
+    observation = Observation(
+        vst_snapshot_complete=True,
+        vst_prepare_pid=2374820,
+        ovo_downloader_pid=1162909,
+        ovo_stopped=True,
+    )
+    assert decide(observation) == Decision("none", "vst_preparing")
+    assert hasattr(orchestrator, "ovo_download_decision")
+    assert orchestrator.ovo_download_decision(observation) == "resume_ovo"
 
 
 def test_inventory_report_requires_every_exact_file(tmp_path):

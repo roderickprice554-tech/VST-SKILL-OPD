@@ -11,14 +11,14 @@ exec 9>"$log_root/monitor.lock"
 flock -n 9 || exit 0
 
 while true; do
-    printf '[%s] hourly check\n' "$(date --iso-8601=seconds)" >> "$log_root/monitor.log"
+    printf '[%s] 30-minute check\n' "$(date --iso-8601=seconds)" >> "$log_root/monitor.log"
     if ! "$python" "$controller" --once >> "$log_root/monitor.log" 2>&1; then
-        printf '[%s] controller failed; retrying next hour\n' "$(date --iso-8601=seconds)" >> "$log_root/monitor.log"
+        printf '[%s] controller failed; retrying in 30 minutes\n' "$(date --iso-8601=seconds)" >> "$log_root/monitor.log"
     fi
     state=$("$python" "$controller" --status-field state 2>/dev/null || true)
-    if [[ "$state" == "smoke_complete" || "$state" == blocked_* ]]; then
+    if [[ "$state" == "ovo_eval_complete" || "$state" == blocked_* ]]; then
         printf '[%s] terminal state=%s\n' "$(date --iso-8601=seconds)" "$state" >> "$log_root/monitor.log"
         exit 0
     fi
-    sleep 3600
+    sleep 1800
 done

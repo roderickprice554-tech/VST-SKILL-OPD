@@ -26,6 +26,12 @@ class Observation:
     ovo_prepare_pid: Optional[int] = None
     smoke_pid: Optional[int] = None
     smoke_complete: bool = False
+    sft_pid: Optional[int] = None
+    sft_complete: bool = False
+    ovo_eval_pid: Optional[int] = None
+    ovo_eval_complete: bool = False
+    training_gpu_ids: Tuple[int, ...] = ()
+    idle_gpu_ids: Tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -89,6 +95,18 @@ def decide(observation: Observation) -> Decision:
     if any(prefix != "Ego4D/" for prefix in observation.missing_prefixes):
         return Decision("block", "blocked_non_ego4d_media")
 
+    if not observation.smoke_complete:
+        if observation.smoke_pid is not None:
+            return Decision("none", "smoke_running")
+        return Decision("run_smoke", "smoke_running")
+
+    if not observation.sft_complete:
+        if observation.sft_pid is not None:
+            return Decision("none", "sft_running")
+        if len(observation.idle_gpu_ids) < 2:
+            return Decision("none", "waiting_for_sft_gpus")
+        return Decision("run_sft", "sft_running")
+
     if not observation.ovo_snapshot_complete:
         if observation.ovo_downloader_pid is None:
             return Decision("restart_ovo", "ovo_downloading")
@@ -101,11 +119,23 @@ def decide(observation: Observation) -> Decision:
             return Decision("none", "ovo_preparing")
         return Decision("prepare_ovo", "ovo_preparing")
 
-    if observation.smoke_complete:
-        return Decision("none", "smoke_complete")
-    if observation.smoke_pid is not None:
-        return Decision("none", "smoke_running")
-    return Decision("run_smoke", "smoke_running")
+    if observation.ovo_eval_complete:
+        return Decision("none", "ovo_eval_complete")
+    if observation.ovo_eval_pid is not None:
+        return Decision("none", "ovo_eval_running")
+    if not observation.idle_gpu_ids:
+        return Decision("none", "waiting_for_ovo_gpu")
+    return Decision("run_ovo_eval", "ovo_eval_running")
+
+
+def ovo_download_decision(observation: Observation) -> Optional[str]:
+    if observation.ovo_snapshot_complete:
+        return None
+    if observation.ovo_downloader_pid is None:
+        return "restart_ovo"
+    if observation.ovo_stopped:
+        return "resume_ovo"
+    return None
 
 
 ROOT = Path("/home/bujunru/vlm-repro/VST-full-reproduction")
@@ -138,6 +168,8 @@ def command_for(action: str) -> list[str]:
         "restart_ovo": ["/usr/bin/bash", str(ROOT / "audit/download_ovobench_official.sh")],
         "prepare_ovo": ["/usr/bin/bash", str(ROOT / "audit/prepare_ovobench_official.sh")],
         "run_smoke": ["/usr/bin/bash", str(ROOT / "audit/run_vst_smoke.sh")],
+        "run_sft": ["/usr/bin/bash", str(ROOT / "audit/run_vst_sft.sh")],
+        "run_ovo_eval": ["/usr/bin/bash", str(ROOT / "audit/run_ovo_qwen3b_eval.sh")],
     }
     if action not in commands:
         raise ValueError(f"unsupported action: {action}")
@@ -201,6 +233,48 @@ def marker_exists(name: str) -> bool:
     return (LOG_ROOT / name).is_file()
 
 
+def gpu_allocation() -> tuple[Tuple[int, ...], Tuple[int, ...]]:
+    try:
+        all_gpu_text = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader,nounits"],
+            text=True,
+        )
+        busy_gpu_text = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-compute-apps=gpu_uuid",
+                "--format=csv,noheader,nounits",
+            ],
+            text=True,
+        )
+        uuid_rows = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,uuid",
+                "--format=csv,noheader,nounits",
+            ],
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return (), ()
+    all_ids = tuple(int(line.strip()) for line in all_gpu_text.splitlines() if line.strip())
+    uuid_to_id = {}
+    for line in uuid_rows.splitlines():
+        index, uuid = (part.strip() for part in line.split(",", 1))
+        uuid_to_id[uuid] = int(index)
+    busy_ids = tuple(
+        sorted(
+            {
+                uuid_to_id[uuid.strip()]
+                for uuid in busy_gpu_text.splitlines()
+                if uuid.strip() in uuid_to_id
+            }
+        )
+    )
+    idle_ids = tuple(index for index in all_ids if index not in busy_ids)
+    return busy_ids, idle_ids
+
+
 def missing_prefixes() -> Tuple[str, ...]:
     path = ROOT / "audit/vst_no_ego4d_media_audit.json"
     if not path.is_file():
@@ -226,6 +300,9 @@ def observe() -> tuple[Observation, dict]:
     audit_vst_pid, _ = find_process("audit_vst_no_ego4d")
     prepare_ovo_pid, _ = find_process("prepare_ovobench_official")
     smoke_pid, _ = find_process("run_vst_smoke")
+    sft_pid, _ = find_process("run_vst_sft")
+    ovo_eval_pid, _ = find_process("run_ovo_qwen3b_eval")
+    training_gpu_ids, idle_gpu_ids = gpu_allocation()
     observation = Observation(
         vst_snapshot_complete=vst_report["complete"],
         vst_downloader_pid=vst_pid,
@@ -241,11 +318,23 @@ def observe() -> tuple[Observation, dict]:
         ovo_prepare_pid=prepare_ovo_pid,
         smoke_pid=smoke_pid,
         smoke_complete=marker_exists("smoke.complete"),
+        sft_pid=sft_pid,
+        sft_complete=marker_exists("sft.complete"),
+        ovo_eval_pid=ovo_eval_pid,
+        ovo_eval_complete=marker_exists("ovo_eval.complete"),
+        training_gpu_ids=training_gpu_ids,
+        idle_gpu_ids=idle_gpu_ids,
     )
     details = {
         "vst": {"bytes": directory_bytes(VST_ROOT), **vst_report},
         "ovo": {"bytes": directory_bytes(OVO_ROOT), **ovo_report},
-        "pids": {"vst": vst_pid, "ovo": ovo_pid},
+        "pids": {
+            "vst": vst_pid,
+            "ovo": ovo_pid,
+            "sft": sft_pid,
+            "ovo_eval": ovo_eval_pid,
+        },
+        "gpus": {"busy": list(training_gpu_ids), "idle": list(idle_gpu_ids)},
         "ovo_stopped": ovo_stopped,
         "missing_prefixes": list(observation.missing_prefixes),
     }
@@ -300,6 +389,12 @@ def read_status() -> dict:
 def run_once(dry_run: bool = False) -> dict:
     observation, details = observe()
     decision = decide(observation)
+    maintenance_action = ovo_download_decision(observation)
+    maintenance_pid = None
+    if maintenance_action and maintenance_action != decision.action and not dry_run:
+        maintenance_pid = execute(
+            Decision(maintenance_action, "ovo_downloading"), observation
+        )
     started_pid = None if dry_run else execute(decision, observation)
     now = datetime.now(timezone.utc).isoformat()
     previous = read_status()
@@ -311,6 +406,8 @@ def run_once(dry_run: bool = False) -> dict:
         "action": decision.action,
         "dry_run": dry_run,
         "started_pid": started_pid,
+        "maintenance_action": maintenance_action,
+        "maintenance_pid": maintenance_pid,
         **details,
     }
     if not dry_run:
