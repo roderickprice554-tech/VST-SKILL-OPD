@@ -1,0 +1,23 @@
+{
+  "bf16": {
+    "enabled": "auto"
+  },
+  "train_batch_size": "auto",
+  "train_micro_batch_size_per_gpu": "auto",
+  "gradient_accumulation_steps": "auto",
+  "zero_optimization": {
+    "stage": 3,
+    "allgather_partitions": true,
+    "allgather_bucket_size": 500000000,
+    "overlap_comm": false,
+    "reduce_scatter": true,
+    "reduce_bucket_size": 500000000,
+    "contiguous_gradients": false,
+    "stage3_max_live_parameters": 1000000000,
+    "stage3_max_reuse_distance": 1000000000,
+    "stage3_prefetch_bucket_size": 500000000,
+    "stage3_param_persistence_threshold": 1000000,
+    "stage3_gather_16bit_weights_on_model_save": false,
+    "sub_group_size": 1000000000000
+  }
+}
