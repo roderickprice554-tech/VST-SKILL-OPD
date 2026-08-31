@@ -33,3 +33,14 @@ def test_read_seek_row_uses_byte_offset(tmp_path):
     path.write_text("".join(rows), encoding="utf-8")
     offset = len(rows[0].encode("utf-8"))
     assert smoke.read_seek_row(path, offset) == {"text": "second"}
+
+
+def test_chat_template_string_reports_decoded_video_turns():
+    smoke = load_smoke_module()
+    assert hasattr(smoke, "count_video_turns")
+    rendered = (
+        "<|im_start|>user<|vision_start|><|video_pad|><|vision_end|>first"
+        "<|im_start|>assistant memory"
+        "<|im_start|>user<|vision_start|><|video_pad|><|vision_end|>second"
+    )
+    assert smoke.count_video_turns(rendered) == 2

@@ -39,6 +39,23 @@ def paired_seek_path(path: Path) -> Path:
     return path.with_name(path.name[: -len(suffix)] + "_seeks.jsonl")
 
 
+def count_video_turns(payload: object) -> int:
+    if isinstance(payload, str):
+        return payload.count("<|vision_start|>")
+    if isinstance(payload, list):
+        return sum(
+            1
+            for message in payload
+            if isinstance(message, dict)
+            and message.get("role") == "user"
+            and any(
+                isinstance(item, dict) and item.get("type") == "video"
+                for item in message.get("content", [])
+            )
+        )
+    raise TypeError(f"unexpected decoded conversation type: {type(payload).__name__}")
+
+
 def manifest_smoke() -> tuple[Path, dict]:
     train_files = sorted(MANIFEST_ROOT.glob("*_train_with_seeks.jsonl"))
     valid_files = sorted(MANIFEST_ROOT.glob("*_valid_with_seeks.jsonl"))
@@ -79,21 +96,16 @@ def model_and_decode_smoke(annotation_path: Path, load_model: bool) -> dict:
         text_sliding_window=32768,
     )
     conversation = dataset.getitem(0, return_text=True)
-    video_turns = [
-        message
-        for message in conversation
-        if message.get("role") == "user"
-        and any(item.get("type") == "video" for item in message.get("content", []))
-    ]
-    if not video_turns:
+    video_turn_count = count_video_turns(conversation)
+    if not video_turn_count:
         raise RuntimeError("decoded sample produced no causal video turns")
-    visible_turns = causal_chunks(tuple(range(len(video_turns))), 1)
+    visible_turns = causal_chunks(tuple(range(video_turn_count)), 1)
     if any(max(turns) > step for step, turns in enumerate(visible_turns)):
         raise RuntimeError("future video turn exposed during causal smoke")
 
     result = {
         "architecture": architecture,
-        "decoded_video_turns": len(video_turns),
+        "decoded_video_turns": video_turn_count,
         "model_weights_loaded": False,
     }
     if load_model:
