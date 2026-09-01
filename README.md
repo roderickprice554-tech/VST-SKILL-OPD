@@ -50,7 +50,7 @@ We release the full training data used for both SFT and RL stages on HuggingFace
 
 ## 🧪 3B 非 Ego4D 复现运行手册（服务器交接）
 
-> 本节对应服务器上的 **Qwen2.5-VL-3B-Instruct、2×A100 40GB、非 Ego4D** 复现实验。Ego4D 已按用户决定从 SFT 和 RL 数据中排除，因此结果必须称为“VST 3B 非 Ego4D 复现”，不能称为完整官方数据组成复现。官方算法、2 FPS、chunk 语义、1 epoch 和流式因果约束保持不变。
+> 本节对应 **Qwen2.5-VL-3B-Instruct、非 Ego4D** 复现实验，不要求使用特定 GPU。当前服务器正在运行的实例恰好使用 2×A100 40GB；接手者必须根据自己的 GPU 数量和显存重新做分布式资源适配。Ego4D 已按用户决定从 SFT 和 RL 数据中排除，因此结果必须称为“VST 3B 非 Ego4D 复现”，不能称为完整官方数据组成复现。官方算法、有效 global batch、2 FPS、chunk 语义、1 epoch 和流式因果约束保持不变。
 
 ### 1. 服务器与仓库
 
@@ -76,7 +76,13 @@ cd VST
 git checkout main
 ```
 
-数据、模型、checkpoint 和日志体积很大，不在 Git 中。服务器上已有目录是当前实验的权威副本。
+数据、模型、checkpoint 和日志体积很大，不在 Git 中。下文 `/home/bujunru/...` 均为当前服务器实例路径，不是代码要求；师兄在自己的机器上必须替换为自己的绝对路径，并把最终路径写入 provenance。服务器上已有目录只是当前实验的权威副本。
+
+迁移到新机器前可用下面的命令定位所有当前服务器硬编码路径，逐项做纯路径适配：
+
+```bash
+rg -n '/home/bujunru|VST-full-reproduction' audit VST-SFT VST-RL eval
+```
 
 ### 2. Python 环境与模型
 
@@ -178,9 +184,40 @@ bash audit/prepare_ovobench_official.sh
 
 `audit/run_ovo_qwen3b_eval.sh` 当前指向未训练的 Qwen 3B，仅用于 Direct/base baseline。评测 SFT 或 RL checkpoint 时必须固定同一 OVO manifest、媒体前缀、帧率、chunk、推理参数和 scorer，只替换 checkpoint 与独立输出目录。
 
-### 6. 两卡 SFT 配置与启动
+### 6. 按目标 GPU 适配 SFT
 
-固定配置：Qwen2.5-VL-3B、2×A100 40GB、ZeRO-3、每卡 batch 1、gradient accumulation 64、有效 global batch 128、学习率 `5e-6`、1 epoch、2 FPS、最多 384 帧。
+算法侧固定配置：Qwen2.5-VL-3B、有效 global batch 128、学习率 `5e-6`、1 epoch、2 FPS、最多 384 帧、vision tower 冻结、语言侧全参数训练（不是 LoRA）。GPU 拓扑、ZeRO/FSDP 分片、CPU/NVMe offload 和 gradient accumulation 属于硬件适配，必须记录差异并先做资源 smoke。
+
+当 `per_device_batch=1` 时，应按下式保持有效 global batch 128：
+
+```text
+gradient_accumulation_steps = 128 / GPU数量
+```
+
+只有结果为整数时才能直接使用。常见配置：
+
+| GPU 数量 | per-device batch | gradient accumulation | effective global batch |
+|---:|---:|---:|---:|
+| 1 | 1 | 128 | 128 |
+| 2 | 1 | 64 | 128 |
+| 4 | 1 | 32 | 128 |
+| 8 | 1 | 16 | 128 |
+| 16 | 1 | 8 | 128 |
+| 32 | 1 | 4 | 128 |
+
+本仓库的 `audit/run_vst_sft.sh` 和 `VST-SFT/scripts/zero3-vst-2xa100.json` 是当前 **2×A100 40GB** 实例配置，不能在未知硬件上原样运行。接手者应复制为新配置文件，至少调整以下项目并保留原文件：
+
+```text
+CUDA_VISIBLE_DEVICES
+torchrun --nproc_per_node
+gradient_accumulation_steps
+ZeRO-3 bucket、parameter/optimizer offload（仅在显存需要时）
+root、model、data、output、log 的绝对路径
+```
+
+禁止为了适配显存而降低 FPS、384 帧上限、缩小正式数据、改变 chunk 语义或改成 LoRA。若目标 GPU 无法在这些约束下完成一个真实 optimizer-step smoke，应先报告硬件阻塞，不要静默改变算法。
+
+当前服务器的两卡启动方式如下，仅用于继续当前机器上的实验。
 
 启动前必须确认没有现有训练，且 audit/smoke gate 已通过：
 
@@ -192,16 +229,16 @@ pgrep -af 'run_vst_sft.sh|torchrun.*train.py|VST-SFT/train.py'
   --validate-zero VST-SFT/scripts/zero3-vst-2xa100.json
 ```
 
-仅在没有训练进程时启动一次：
+仅在当前服务器没有训练进程时启动一次：
 
 ```bash
 nohup bash audit/run_vst_sft.sh \
   > logs/vst_download_orchestrator/run_sft_2gpu_manual.log 2>&1 < /dev/null &
 ```
 
-当前 launcher 会生成新的时间戳 run，不能把“重新运行 launcher”当作断点恢复。进程异常退出时，先检查最后一个 `checkpoint-*` 和日志，再明确指定恢复策略。
+当前 launcher 会生成新的时间戳 run，不能把“重新运行 launcher”当作断点恢复。进程异常退出时，先检查最后一个 `checkpoint-*` 和日志，再明确指定恢复策略。师兄机器的精确命令必须在确认 GPU 型号、GPU 数量、单卡显存、主机内存和本地磁盘后生成。
 
-### 7. 当前服务器状态（2026-09-01）
+### 7. 当前 2×A100 服务器实例状态（2026-09-01）
 
 当前两卡 SFT 已启动：
 
