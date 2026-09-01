@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path("/home/bujunru/vlm-repro/VST-full-reproduction")
 MODEL_PATH = Path("/home/bujunru/vlm-repro/models/Qwen2.5-VL-3B-Instruct")
 MANIFEST_ROOT = ROOT / "data_manifests/vst_no_ego4d_aaef152e"
-REQUIRED_IDLE_GPUS = (0,)
+REQUIRED_IDLE_GPUS = (0, 1)
 MIN_FREE_BYTES = 2 * 1024**4
 REQUIRED_MARKERS = (
     ROOT / "logs/vst_download_orchestrator/vst_audit.complete",
@@ -64,7 +64,7 @@ def validate() -> dict:
         raise RuntimeError(f"free disk below 2TiB: {free_bytes}")
     idle = idle_gpu_ids()
     if not all(index in idle for index in REQUIRED_IDLE_GPUS):
-        raise RuntimeError(f"training GPU 0 must be idle; idle={idle}")
+        raise RuntimeError(f"training GPUs 0 and 1 must be idle; idle={idle}")
     train, valid = manifest_paths()
     return {
         "model_path": str(MODEL_PATH),
@@ -72,9 +72,9 @@ def validate() -> dict:
         "valid_files": [str(path) for path in valid],
         "idle_gpu_ids": list(idle),
         "free_bytes": free_bytes,
-        "world_size": 1,
+        "world_size": 2,
         "per_device_batch": 1,
-        "gradient_accumulation": 128,
+        "gradient_accumulation": 64,
         "effective_global_batch": 128,
         "epochs": 1,
     }

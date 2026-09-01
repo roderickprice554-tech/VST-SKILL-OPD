@@ -5,7 +5,7 @@ root=/home/bujunru/vlm-repro/VST-full-reproduction
 model=/home/bujunru/vlm-repro/models/Qwen2.5-VL-3B-Instruct
 manifest_root="$root/data_manifests/vst_no_ego4d_aaef152e"
 validator="$root/audit/validate_vst_sft_launch.py"
-zero="$root/VST-SFT/scripts/zero3-vst-1xa100-offload.json"
+zero="$root/VST-SFT/scripts/zero3-vst-2xa100.json"
 log_root="$root/logs/vst_download_orchestrator"
 audit_marker="$root/logs/vst_download_orchestrator/vst_audit.complete"
 smoke_marker="$root/logs/vst_download_orchestrator/smoke.complete"
@@ -18,10 +18,10 @@ marker="$log_root/sft.complete"
 mapfile -t train_files < <(find "$manifest_root" -maxdepth 1 -type f -name '*_train_with_seeks.jsonl' | sort)
 mapfile -t valid_files < <(find "$manifest_root" -maxdepth 1 -type f -name '*_valid_with_seeks.jsonl' | sort)
 
-run_id="vst_3b_no_ego4d_single_gpu_optimizer_smoke_$(date +%Y%m%d_%H%M%S)"
+run_id="vst_3b_no_ego4d_2xa100_$(date +%Y%m%d_%H%M%S)"
 output_dir="$root/checkpoints/vst_full/sft_runs/$run_id"
 mkdir -p "$output_dir" "$log_root"
-printf '{"base_model":"%s","epochs":1,"world_size":1,"per_device_batch":1,"gradient_accumulation":128,"effective_global_batch":128,"zero3_source":"zero3-vst-2xa100.json + cpu parameter/optimizer offload","started_at":"%s"}\n' \
+printf '{"base_model":"%s","epochs":1,"world_size":2,"per_device_batch":1,"gradient_accumulation":64,"effective_global_batch":128,"zero3_source":"deepspeed-0.17.1/autotuning/config_templates/template_zero3.json","started_at":"%s"}\n' \
     "$model" "$(date --iso-8601=seconds)" > "$output_dir/provenance.json"
 
 export DATASET_PATH="$root/data/vst-training-media-no-ego4d"
@@ -33,16 +33,12 @@ export FPS_MAX_FRAMES=384
 export TEXT_SLIDING_WINDOW=32768
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=false
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=0,1
 export PATH=/home/bujunru/.conda/envs/vst-sft311/bin:$PATH
-export CPATH="$root/.deps/libaio/root/usr/include"
-export LIBRARY_PATH="$root/.deps/libaio/root/usr/lib/x86_64-linux-gnu"
-export LD_LIBRARY_PATH="$LIBRARY_PATH:${LD_LIBRARY_PATH:-}"
-mkdir -p "$root/checkpoints/vst_full/nvme_offload_v6"
 
 cd "$root/VST-SFT"
 /home/bujunru/.conda/envs/vst-sft311/bin/torchrun \
-    --nproc_per_node=1 \
+    --nproc_per_node=2 \
     --nnodes=1 \
     --node_rank=0 \
     --master_addr=127.0.0.1 \
@@ -55,7 +51,7 @@ cd "$root/VST-SFT"
     --save_on_each_node True \
     --do_train True \
     --per_device_train_batch_size 1 \
-    --gradient_accumulation_steps 128 \
+    --gradient_accumulation_steps 64 \
     --learning_rate 5e-6 \
     --warmup_ratio 0.03 \
     --optim adamw_torch \
