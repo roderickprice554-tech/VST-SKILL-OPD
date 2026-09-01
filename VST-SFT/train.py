@@ -6,7 +6,7 @@ qwen2_5_vl.lce_forward = lce_forward
 
 from transformers.models.qwen2.modeling_qwen2 import Qwen2Model
 
-from streaming_vlm.utils.patch_trainer import compute_loss_logging_labels
+from streaming_vlm.utils.patch_trainer import compute_loss_logging_labels, get_batch_samples_lazy
 
 from dataclasses import asdict
 import transformers
@@ -110,5 +110,6 @@ if __name__ == "__main__":
         processing_class=processor
     )
     trainer.compute_loss = MethodType(compute_loss_logging_labels, trainer)
+    trainer.get_batch_samples = MethodType(get_batch_samples_lazy, trainer)
     # Pass specific path or False depending on whether resuming training
     trainer.train(resume_from_checkpoint=resume_ckpt if resume_ckpt else False)

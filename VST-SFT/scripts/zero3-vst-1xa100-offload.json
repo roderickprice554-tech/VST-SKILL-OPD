@@ -1,0 +1,47 @@
+{
+  "bf16": {
+    "enabled": "auto"
+  },
+  "train_batch_size": "auto",
+  "train_micro_batch_size_per_gpu": "auto",
+  "gradient_accumulation_steps": "auto",
+  "zero_optimization": {
+    "stage": 3,
+    "offload_optimizer": {
+      "device": "nvme",
+      "nvme_path": "/home/bujunru/vlm-repro/VST-full-reproduction/checkpoints/vst_full/nvme_offload_v6",
+      "buffer_count": 4,
+      "pin_memory": false,
+      "pipeline_read": true,
+      "pipeline_write": true,
+      "fast_init": true
+    },
+    "offload_param": {
+      "device": "nvme",
+      "nvme_path": "/home/bujunru/vlm-repro/VST-full-reproduction/checkpoints/vst_full/nvme_offload_v6",
+      "buffer_count": 8,
+      "buffer_size": 350000000,
+      "max_in_cpu": 500000000,
+      "pin_memory": false
+    },
+    "allgather_partitions": true,
+    "allgather_bucket_size": 50000000,
+    "overlap_comm": false,
+    "reduce_scatter": true,
+    "reduce_bucket_size": 50000000,
+    "contiguous_gradients": false,
+    "stage3_max_live_parameters": 100000000,
+    "stage3_max_reuse_distance": 100000000,
+    "stage3_prefetch_bucket_size": 0,
+    "stage3_param_persistence_threshold": 1000000,
+    "stage3_gather_16bit_weights_on_model_save": false,
+    "sub_group_size": 100000000
+  },
+  "aio": {
+    "block_size": 1048576,
+    "queue_depth": 8,
+    "thread_count": 1,
+    "single_submit": false,
+    "overlap_events": true
+  }
+}

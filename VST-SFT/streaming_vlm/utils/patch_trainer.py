@@ -7,6 +7,31 @@ from transformers.trainer import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
 
 logger = logging.get_logger(__name__)   
 
+
+class LazyBatchSamples:
+    def __init__(self, epoch_iterator, num_batches):
+        self.epoch_iterator = epoch_iterator
+        self.num_batches = num_batches
+        self.yielded = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.yielded >= self.num_batches:
+            raise StopIteration
+        batch = next(self.epoch_iterator)
+        self.yielded += 1
+        return batch
+
+    def __len__(self):
+        return self.num_batches
+
+
+def get_batch_samples_lazy(self, epoch_iterator, num_batches, device):
+    """Yield accumulation batches one at a time instead of preloading them on GPU."""
+    return LazyBatchSamples(epoch_iterator, num_batches), None
+
 def compute_loss_logging_labels(self, model, inputs, return_outputs=False, num_items_in_batch=None):
     """
     How the loss is computed by Trainer. By default, all models return the loss in the first element.
