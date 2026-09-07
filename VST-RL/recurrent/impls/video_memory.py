@@ -282,12 +282,9 @@ class VideoMemoryDataset(RDataset):
 # Modified Template for Video Context
 TEMPLATE_TYPE_1 = """{TimeStamp} {VideoClip}"""
 
-TEMPLATE_TYPE_2 = """{TimeStamp} {VideoClip}<problem>
-{prompt}
-</problem>
-
+TEMPLATE_TYPE_2 = """{TimeStamp} {VideoClip}
 **Streaming Thinking Rules:**
-1. **Update Only**:  Observe the video segment, read previous text, and Only record **new** clues from the current segment relevant to <problem>. Do not repeat history.
+1. **Update Only**: Observe the video segment, read previous text, and only record **new** facts from the current segment. Do not repeat history.
 2. **Wait for End**: Do not provide the final answer until the video stream is complete. Currently, just accumulate evidence.
 
 Start Analysis:
@@ -390,10 +387,11 @@ class VideoMemoryAgent(RAgent):
 
         # 3) Prepare vectorized batch fields.
         batch_data = self.gen_batch.non_tensor_batch
-        prompts = batch_data['prompt_ids']
-        questions = batch_data['question_ids']
         durations = batch_data['video_duration']
         mm_data = batch_data['multi_modal_data']
+
+        if is_final_turn:
+            prompts = batch_data['prompt_ids']
 
         if not is_final_turn:
             target_start = self.config.video_clip_token_size * calc_step
@@ -420,6 +418,13 @@ class VideoMemoryAgent(RAgent):
         self.messages = []
         self.video_inputs = []
         self.batch_uids = []
+        self.pending_turn_metadata = {
+            'trajectory_uid': [],
+            'sample_index': [],
+            'transition_index': [],
+            'previous_memory_tokens': [],
+            'current_chunk_boundary': [],
+        }
 
         for idx in tqdm(target_indices):
             # A) Slice current video segment.
@@ -446,6 +451,18 @@ class VideoMemoryAgent(RAgent):
             t_factor = durations[idx] / self.num_frames[idx]
             s_time = s_idx * t_factor
             e_time = e_idx * t_factor
+
+            self.pending_turn_metadata['trajectory_uid'].append(batch_data['uid'][idx])
+            self.pending_turn_metadata['sample_index'].append(idx)
+            self.pending_turn_metadata['transition_index'].append(None if is_final_turn else self.step)
+            previous_memory = None
+            if not is_final_turn:
+                previous_memory = list(self.memory[idx]) if self.memory[idx] is not None else []
+            self.pending_turn_metadata['previous_memory_tokens'].append(previous_memory)
+            self.pending_turn_metadata['current_chunk_boundary'].append({
+                'frames': [s_idx, e_idx],
+                'seconds': [float(s_time), float(e_time)],
+            })
             
             ts_str = f"Time={s_time:.1f}-{e_time:.1f}s"
             ts_tokens = self.tokenizer.encode(ts_str, add_special_tokens=False)
@@ -453,7 +470,6 @@ class VideoMemoryAgent(RAgent):
             # C) Build template kwargs.
             vid_pad_num = (e_idx - s_idx + 1) // 2 * self.tokens_per_frame[idx]
             fmt_kwargs = {
-                'prompt': questions[idx],
                 'memory': self.memory[idx] if self.memory[idx] is not None else self.NO_MEMORY_TOKENS,
                 'TimeStamp': ts_tokens,
                 'VideoClip': torch.tensor([151652] + [151656] * vid_pad_num + [151653]),
@@ -464,7 +480,6 @@ class VideoMemoryAgent(RAgent):
                 end_ts_str = f"Time={e_time:.1f}s"
                 fmt_kwargs['EndTime'] = self.tokenizer.encode(end_ts_str, add_special_tokens=False)
                 fmt_kwargs['PromptFinal'] = prompts[idx]
-                fmt_kwargs.pop('prompt')
 
             # D) Render tokenized message.
             self.messages.append(template.format(**fmt_kwargs))
@@ -543,6 +558,8 @@ class VideoMemoryAgent(RAgent):
 
     @override
     def update(self, gen_output: DataProto) -> DataProto:
+        generated_tokens = [None] * len(self.pending_turn_metadata['sample_index'])
+        updated_memory_tokens = [None] * len(self.pending_turn_metadata['sample_index'])
         if not self.is_final:
             # Update memory with the text description/summary of the video clip
             time_stamp = self._get_time_stamp_ids(gen_output)
@@ -568,6 +585,25 @@ class VideoMemoryAgent(RAgent):
                         self.memory[i] = new_content
                     else:
                         self.memory[i] += new_content
+
+                    output_idx = re_map_id[i]
+                    generated_tokens[output_idx] = list(resp_item)
+                    updated_memory_tokens[output_idx] = list(self.memory[i])
+
+        def object_array(items):
+            result = np.empty(len(items), dtype=object)
+            result[:] = items
+            return result
+
+        gen_output.non_tensor_batch.update({
+            'trajectory_uid': object_array(self.pending_turn_metadata['trajectory_uid']),
+            'sample_index': np.asarray(self.pending_turn_metadata['sample_index'], dtype=np.int64),
+            'transition_index': object_array(self.pending_turn_metadata['transition_index']),
+            'previous_memory_tokens': object_array(self.pending_turn_metadata['previous_memory_tokens']),
+            'current_chunk_boundary': object_array(self.pending_turn_metadata['current_chunk_boundary']),
+            'generated_y_t_tokens': object_array(generated_tokens),
+            'updated_memory_tokens': object_array(updated_memory_tokens),
+        })
 
         self.log_step(gen_output)
         self.step += 1
@@ -621,6 +657,3 @@ class VideoMemoryAgent(RAgent):
         logger.info(f"{' '*10}{'-'*20}response end{'-'*20}{' '*10}")
 
 REGISTER = RRegister(config_cls=VideoMemoryConfig, dataset_cls=VideoMemoryDataset, agent_cls=VideoMemoryAgent)
-
-
-
