@@ -12,6 +12,7 @@ sys.modules.setdefault("lmdb", SimpleNamespace())
 
 from recurrent.interface import aggregate_trajectories, propagate_trajectory_reward
 from recurrent.impls.video_memory import TEMPLATE_TYPE_2, VideoMemoryAgent
+from recurrent.generation_manager import LLMGenerationManager
 from verl.protocol import DataProto
 
 
@@ -246,3 +247,45 @@ def test_three_chunks_emit_two_memory_transitions_and_one_final_row():
         "updated_memory_tokens",
     ):
         assert outputs[2].non_tensor_batch[key][0] is None
+
+
+def test_manager_aligns_response_mask_policy_version_and_metadata():
+    output = _synthetic_recurrent_output()
+    output.batch["attention_mask"] = torch.tensor(
+        [
+            [1, 1, 1, 0],
+            [1, 1, 1, 0],
+            [1, 1, 1, 1],
+            [1, 1, 1, 0],
+            [1, 1, 1, 0],
+        ]
+    )
+    output.batch.pop("response_mask")
+    output.non_tensor_batch.pop("policy_version")
+    turns = output.chunk(2)
+
+    for turn in turns:
+        LLMGenerationManager._annotate_turn_output(turn, policy_version=23)
+    combined = LLMGenerationManager._concat_and_validate(
+        turns,
+        torch.tensor([False, False, False, True, True]),
+        torch.tensor([0, 1, 0, 0, 1]),
+    )
+
+    assert combined.batch["response_mask"].tolist() == [
+        [True, False],
+        [True, False],
+        [True, True],
+        [True, False],
+        [True, False],
+    ]
+    assert combined.batch["final_mask"].tolist() == [False, False, False, True, True]
+    assert combined.non_tensor_batch["policy_version"].tolist() == [23, 23, 23, 23, 23]
+
+
+def test_manager_requires_integer_policy_version():
+    output = _synthetic_recurrent_output()
+    output.non_tensor_batch.pop("policy_version")
+
+    with pytest.raises(ValueError, match="policy_version"):
+        LLMGenerationManager._annotate_turn_output(output, policy_version=None)

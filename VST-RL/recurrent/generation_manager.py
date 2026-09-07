@@ -20,7 +20,7 @@ from codetiming import Timer
 
 from verl import DataProto
 
-from .interface import RAgent, RConfig
+from .interface import RAgent, RConfig, validate_recurrent_turns
 from .utils import (chat_template, chat_template_v2, create_attention_mask, create_position_ids, create_position_ids_vl,
                     graceful_padding, indexing_proto,
                     pad_tensor_list_to_length)
@@ -158,7 +158,24 @@ class LLMGenerationManager:
             output_batch = indexing_proto(output_batch, no_padding_mask)
         return output_batch
 
-    def run_llm_loop(self, gen_batch, timing_raw) -> Tuple[DataProto, torch.BoolTensor, torch.LongTensor]:
+    @staticmethod
+    def _annotate_turn_output(gen_output: DataProto, policy_version: int) -> None:
+        if not isinstance(policy_version, int) or isinstance(policy_version, bool):
+            raise ValueError("policy_version must be an integer frozen before rollout")
+        response_length = gen_output.batch['responses'].size(-1)
+        gen_output.batch['response_mask'] = gen_output.batch['attention_mask'][:, -response_length:].bool()
+        gen_output.non_tensor_batch['policy_version'] = np.full(
+            len(gen_output), policy_version, dtype=np.int64
+        )
+
+    @staticmethod
+    def _concat_and_validate(gen_output_list, final_mask, sample_index) -> DataProto:
+        output = DataProto.concat(gen_output_list)
+        output.batch['final_mask'] = final_mask.to(output.batch.device)
+        validate_recurrent_turns(output, final_mask, sample_index)
+        return output
+
+    def run_llm_loop(self, gen_batch, timing_raw, policy_version: int) -> Tuple[DataProto, torch.BoolTensor, torch.LongTensor]:
         """Run main LLM generation loop.
         genbatch: 'context_ids','context_length','prompt_ids'
         timing_raw: timing dict used in ray_trainer, note that we will accumulate the time cost in this loop, instead of override each time as in ray_trainer.
@@ -189,6 +206,7 @@ class LLMGenerationManager:
                 logger.info('generation done')
             with _timer('mt_update', timing_raw):
                 gen_output = self.agent.update(gen_output)
+                self._annotate_turn_output(gen_output, policy_version)
                 # gen_output.non_tensor_batch['multi_modal_inputs'] = vid_inputs
                 gen_output_list.append(gen_output)
                 logger.info('agent update done')
@@ -198,4 +216,5 @@ class LLMGenerationManager:
         assert len(sample_index) == sum(active_num_list)
         assert sum(final_mask) == len(gen_batch)
         logger.info(f"ACTIVE_TRAJ_NUM: {active_num_list}")
-        return DataProto.concat(gen_output_list), final_mask, sample_index # pyright: ignore
+        output = self._concat_and_validate(gen_output_list, final_mask, sample_index)
+        return output, final_mask, sample_index # pyright: ignore
