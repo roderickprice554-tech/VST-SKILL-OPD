@@ -26,6 +26,135 @@ from verl.protocol import DataProto, DataProtoItem
 from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
 
 
+RECURRENT_TURN_METADATA_KEYS = (
+    "trajectory_uid",
+    "sample_index",
+    "transition_index",
+    "previous_memory_tokens",
+    "current_chunk_boundary",
+    "generated_y_t_tokens",
+    "updated_memory_tokens",
+    "policy_version",
+)
+
+_TRANSITION_ONLY_KEYS = (
+    "transition_index",
+    "previous_memory_tokens",
+    "generated_y_t_tokens",
+    "updated_memory_tokens",
+)
+
+
+def _as_list(value):
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().tolist()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return list(value)
+
+
+def validate_recurrent_turns(
+    output: DataProto,
+    final_mask: torch.Tensor,
+    sample_index: torch.Tensor,
+) -> None:
+    """Validate row alignment and the memory/final boundary of a rollout batch."""
+    row_count = len(sample_index)
+    if len(output) != row_count or len(final_mask) != row_count:
+        raise ValueError("rollout tensors, final_mask, and sample_index must have equal row counts")
+
+    for key in RECURRENT_TURN_METADATA_KEYS:
+        if key not in output.non_tensor_batch:
+            raise ValueError(f"missing recurrent turn metadata: {key}")
+        if len(output.non_tensor_batch[key]) != row_count:
+            raise ValueError(f"metadata {key} is not row-aligned")
+
+    if "response_mask" not in output.batch or len(output.batch["response_mask"]) != row_count:
+        raise ValueError("response_mask is not row-aligned")
+
+    expected_sample_index = _as_list(sample_index)
+    metadata_sample_index = _as_list(output.non_tensor_batch["sample_index"])
+    if metadata_sample_index != expected_sample_index:
+        raise ValueError("metadata sample_index does not match rollout sample_index")
+
+    final_rows = _as_list(final_mask)
+    uids = _as_list(output.non_tensor_batch["trajectory_uid"])
+    transition_indices = _as_list(output.non_tensor_batch["transition_index"])
+    policy_versions = _as_list(output.non_tensor_batch["policy_version"])
+    if len(set(policy_versions)) != 1:
+        raise ValueError("policy_version must be frozen for the complete rollout batch")
+
+    rows_by_uid = {}
+    for row, uid in enumerate(uids):
+        rows_by_uid.setdefault(uid, []).append(row)
+
+    for uid, rows in rows_by_uid.items():
+        uid_sample_indices = {expected_sample_index[row] for row in rows}
+        if len(uid_sample_indices) != 1:
+            raise ValueError(f"trajectory_uid {uid!r} maps to multiple sample_index values")
+
+        uid_final_rows = [row for row in rows if final_rows[row]]
+        if len(uid_final_rows) != 1:
+            raise ValueError(f"trajectory_uid {uid!r} must have exactly one final row")
+
+        memory_rows = [row for row in rows if not final_rows[row]]
+        actual_indices = sorted(transition_indices[row] for row in memory_rows)
+        if actual_indices != list(range(len(memory_rows))):
+            raise ValueError(f"trajectory_uid {uid!r} transition_index must be contiguous from zero")
+
+        final_row = uid_final_rows[0]
+        for key in _TRANSITION_ONLY_KEYS:
+            if output.non_tensor_batch[key][final_row] is not None:
+                raise ValueError(f"final row must set {key} to None")
+
+
+def aggregate_trajectories(
+    output: DataProto,
+    final_mask: torch.Tensor,
+    sample_index: torch.Tensor,
+) -> Dict[str, List[int]]:
+    """Return ordered row indices for each complete recurrent trajectory."""
+    validate_recurrent_turns(output, final_mask, sample_index)
+    final_rows = _as_list(final_mask)
+    uids = _as_list(output.non_tensor_batch["trajectory_uid"])
+    transition_indices = _as_list(output.non_tensor_batch["transition_index"])
+    trajectories = {}
+    for uid in dict.fromkeys(uids):
+        memory_rows = [row for row, row_uid in enumerate(uids) if row_uid == uid and not final_rows[row]]
+        memory_rows.sort(key=lambda row: transition_indices[row])
+        final_row = next(row for row, row_uid in enumerate(uids) if row_uid == uid and final_rows[row])
+        trajectories[uid] = memory_rows + [final_row]
+    return trajectories
+
+
+def propagate_trajectory_reward(
+    final_reward: torch.Tensor,
+    output: DataProto,
+    final_mask: torch.Tensor,
+    sample_index: torch.Tensor,
+) -> torch.Tensor:
+    """Map final-only rewards to turns after validating UID/index identity."""
+    validate_recurrent_turns(output, final_mask, sample_index)
+    final_rows = _as_list(final_mask)
+    row_sample_indices = _as_list(sample_index)
+    uids = _as_list(output.non_tensor_batch["trajectory_uid"])
+
+    final_uid_by_sample = {}
+    for row, is_final in enumerate(final_rows):
+        if is_final:
+            final_uid_by_sample[row_sample_indices[row]] = uids[row]
+    if sorted(final_uid_by_sample) != list(range(len(final_reward))):
+        raise ValueError("final rows do not cover each final_reward sample_index exactly once")
+
+    for row, sample in enumerate(row_sample_indices):
+        if uids[row] != final_uid_by_sample[sample]:
+            raise ValueError(
+                f"trajectory_uid {uids[row]!r} does not match final row for sample_index {sample}"
+            )
+
+    return final_reward[sample_index.to(final_reward.device)]
+
+
 @dataclass
 class RConfig:
     """
@@ -292,4 +421,3 @@ class RRegister:
             raise TypeError(f"Object '{obj_name}' in '{file_path}' is not an instance of {cls}.")
         print(f"[RECURRENT] recurrent enabled, using register '{obj_name}' from '{file_path}'.")
         return obj
-
