@@ -26,6 +26,11 @@ def test_provenance_manifest():
     assert manifest["source_commit"] == "26f31d36eb8bcc0b480b43eaaed1277b33a10488"
     assert manifest["python"] == "/home/bujunru/.conda/envs/vision-se/bin/python"
     assert manifest["assets_copied"] is False
+    assert manifest["environment"] == {
+        "path": "/home/bujunru/.conda/envs/vision-se",
+        "manifest": "VST-RL/requirements.txt",
+        "manifest_sha256": "529e571ffeae13ffe8f2bc53b993d6c3c94695fcd0218fe6ca7323a848875029",
+    }
     assert manifest["models"]
     assert manifest["datasets"]
 
