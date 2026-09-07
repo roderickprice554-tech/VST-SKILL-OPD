@@ -289,3 +289,31 @@ def test_manager_requires_integer_policy_version():
 
     with pytest.raises(ValueError, match="policy_version"):
         LLMGenerationManager._annotate_turn_output(output, policy_version=None)
+
+
+def test_manager_preserves_legacy_agents_without_transition_metadata():
+    output = DataProto.from_dict(
+        tensors={
+            "responses": torch.tensor([[8, 0]]),
+            "attention_mask": torch.tensor([[1, 1, 1, 0]]),
+        },
+        non_tensors={"uid": np.array(["legacy-a"], dtype=object)},
+    )
+    LLMGenerationManager._annotate_turn_output(output, policy_version=9)
+
+    combined = LLMGenerationManager._concat_and_validate(
+        [output], torch.tensor([True]), torch.tensor([0])
+    )
+
+    assert combined.batch["final_mask"].tolist() == [True]
+
+
+def test_recurrent_trainer_passes_policy_version_and_uses_uid_checked_reward():
+    trainer_source = (REPO_ROOT / "VST-RL" / "verl" / "trainer" / "ppo" / "ray_trainer.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert trainer_source.count("policy_version=self.global_steps") == 2
+    assert "propagate_trajectory_reward(" in trainer_source
+    assert "batch.batch['trajectory_reward'] = trajectory_reward" in trainer_source
+    assert "batch.batch['token_level_scores'] = batch.batch['trajectory_reward']" in trainer_source

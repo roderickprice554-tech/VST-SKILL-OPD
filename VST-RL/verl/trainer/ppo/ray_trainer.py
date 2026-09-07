@@ -753,7 +753,9 @@ class RayPPOTrainer:
                 from recurrent.utils import final_batch
                 test_gen_batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(test_gen_batch.batch))],
                                                                     dtype=object)
-                output_gen_batch, final_mask, sample_index = self.generation_manager.run_llm_loop(test_gen_batch, {})
+                output_gen_batch, final_mask, sample_index = self.generation_manager.run_llm_loop(
+                    test_gen_batch, {}, policy_version=self.global_steps
+                )
                 test_output_gen_batch = final_batch(output_gen_batch, final_mask, sample_index)
 
             print('validation generation end')
@@ -1146,7 +1148,9 @@ class RayPPOTrainer:
                             # Also, just as what happened in validate, we will always set n=1 in generation_kwargs.
                             batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                             gen_batch = gen_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
-                            gen_batch_output, final_mask, sample_index = self.generation_manager.run_llm_loop(gen_batch, timing_raw)
+                            gen_batch_output, final_mask, sample_index = self.generation_manager.run_llm_loop(
+                                gen_batch, timing_raw, policy_version=self.global_steps
+                            )
                             from recurrent.utils import get_cumulative_counts, union_uid_clip_num
                             clip_num = get_cumulative_counts(sample_index)
                             gen_uid = union_uid_clip_num(gen_batch_output.non_tensor_batch['uid'], clip_num)
@@ -1211,6 +1215,11 @@ class RayPPOTrainer:
                             reward_batch = final_batch(batch, final_mask, sample_index).union(original_batch)
                             del original_batch
                             reward_tensor, reward_extra_infos_dict = compute_reward(reward_batch, self.reward_fn)
+                            from recurrent.interface import propagate_trajectory_reward
+                            trajectory_reward = propagate_trajectory_reward(
+                                reward_tensor, batch, final_mask, sample_index
+                            )
+                            batch.batch['trajectory_reward'] = trajectory_reward
                             # pad for log_prob
                             # split_mini_batch_scale = 8 # magic number
                             # batch.meta_info["num_repeat"] = self.config.actor_rollout_ref.rollout.n 
@@ -1331,7 +1340,7 @@ class RayPPOTrainer:
                             batch.batch['advantages'] = advantages
                             batch.batch['returns'] = advantages                             
                             # turns of a sample will have the same final reward, now we mapping turns to samples
-                            batch.batch['token_level_scores'] = reward_tensor[sample_index]
+                            batch.batch['token_level_scores'] = batch.batch['trajectory_reward']
 
                             if not self.config.actor_rollout_ref.actor.get('use_kl_loss', False):
                                 raise NotImplementedError("KL penalty is not implemented for recurrent.")

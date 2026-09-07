@@ -172,7 +172,8 @@ class LLMGenerationManager:
     def _concat_and_validate(gen_output_list, final_mask, sample_index) -> DataProto:
         output = DataProto.concat(gen_output_list)
         output.batch['final_mask'] = final_mask.to(output.batch.device)
-        validate_recurrent_turns(output, final_mask, sample_index)
+        if 'trajectory_uid' in output.non_tensor_batch:
+            validate_recurrent_turns(output, final_mask, sample_index)
         return output
 
     def run_llm_loop(self, gen_batch, timing_raw, policy_version: int) -> Tuple[DataProto, torch.BoolTensor, torch.LongTensor]:
