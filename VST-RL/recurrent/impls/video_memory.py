@@ -34,6 +34,7 @@ class VideoMemoryConfig(RConfig):
     video_key: str # column name for the video tokens in the dataset
     prompt_type: str
     max_video_frame: int
+    video_root: Optional[str] = None
 
     @property
     def max_raw_input_length(self):
@@ -73,6 +74,7 @@ class VideoMemoryDataset(RDataset):
 
         self.prog_video = prog_video
         self.use_cache = use_cache
+        self.video_root = recurrent_config.video_root
         self.video_cache_dir = "/mnt/verl_lmdb_cache" 
         self.env = None
 
@@ -165,6 +167,11 @@ class VideoMemoryDataset(RDataset):
         path_hash = hashlib.md5(video_path_info.encode('utf-8')).hexdigest()
         return f"{index}_{path_hash}".encode('ascii')
 
+    def _resolve_video_path(self, video_path: str) -> str:
+        if os.path.isabs(video_path) or self.video_root is None:
+            return video_path
+        return os.path.join(self.video_root, video_path)
+
     def __getitem__(self, item):
         
         self._init_env()
@@ -207,6 +214,7 @@ class VideoMemoryDataset(RDataset):
             
             processed_video_list = []
             for video_path in video_paths:
+                video_path = self._resolve_video_path(video_path)
                 video_tensor = process_video(
                     {"video": video_path}, 
                     fps=2, 

@@ -607,11 +607,28 @@ class ActorRolloutRefWorker(Worker):
         if self._is_offload_optimizer:
             load_fsdp_optimizer(optimizer=self.actor_optimizer, device_id=torch.cuda.current_device())
 
+        parameter_probe = None
+        if data.meta_info.get("skill_opd", {}).get("enable", False):
+            probe_parameter = next(
+                parameter for parameter in self.actor_module_fsdp.parameters()
+                if parameter.requires_grad
+            )
+            parameter_probe = (
+                probe_parameter,
+                probe_parameter.detach().reshape(-1)[:4096].float().clone(),
+            )
+
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data=data)
             # perform training
             with Timer(name="update_policy", logger=None) as timer:
                 metrics = self.actor.update_policy(data=data)
+            if parameter_probe is not None:
+                probe_parameter, value_before = parameter_probe
+                value_after = probe_parameter.detach().reshape(-1)[:4096].float()
+                metrics["skill_opd/trainable_param_max_change"] = float(
+                    (value_after - value_before).abs().max().item()
+                )
             delta_time = timer.last
             global_num_tokens = data.meta_info["global_token_num"]
             estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)

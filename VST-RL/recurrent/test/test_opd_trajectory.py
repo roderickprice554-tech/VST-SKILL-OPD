@@ -15,7 +15,7 @@ from recurrent.interface import (
     make_repeated_rollout_ids,
     propagate_trajectory_reward,
 )
-from recurrent.impls.video_memory import TEMPLATE_TYPE_2, VideoMemoryAgent
+from recurrent.impls.video_memory import TEMPLATE_TYPE_2, VideoMemoryAgent, VideoMemoryDataset
 from recurrent.generation_manager import LLMGenerationManager
 from verl.protocol import DataProto
 
@@ -222,6 +222,14 @@ def _video_agent_for_action(step, guarded):
 def test_type2_memory_template_is_query_independent():
     assert "{prompt}" not in TEMPLATE_TYPE_2
     assert "<problem>" not in TEMPLATE_TYPE_2
+
+
+def test_video_paths_can_resolve_against_read_only_asset_root():
+    dataset = VideoMemoryDataset.__new__(VideoMemoryDataset)
+    dataset.video_root = "/readonly/media"
+
+    assert dataset._resolve_video_path("source/clip.mp4") == "/readonly/media/source/clip.mp4"
+    assert dataset._resolve_video_path("/absolute/clip.mp4") == "/absolute/clip.mp4"
 
 
 def test_nonfinal_action_does_not_access_query_fields():

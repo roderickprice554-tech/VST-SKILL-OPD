@@ -261,6 +261,7 @@ recurrent:
     config:
       max_video_frame: 384
       video_key: video_context
+      video_root: null
       video_clip_token_size: 6000
       max_prompt_length: 1000
       max_memorization_length: 4000
@@ -276,6 +277,7 @@ recurrent:
 
 skill_opd:
   enable: false
+  smoke_metrics_path: null
   mode: localized
   top_k: 100
   teacher_temperature: 1.0

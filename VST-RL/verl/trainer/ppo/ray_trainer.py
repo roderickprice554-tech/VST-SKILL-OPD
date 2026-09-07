@@ -1334,6 +1334,23 @@ class RayPPOTrainer:
                                     for reflection in reflections
                                     if reflection.reflection_valid
                                 )
+                                metrics["skill_opd/trajectory_count"] = len(
+                                    reflection_trajectories
+                                )
+                                metrics["skill_opd/memory_transition_count"] = sum(
+                                    len(trajectory.transitions)
+                                    for trajectory in reflection_trajectories
+                                )
+                                metrics["skill_opd/final_turn_count"] = len(final_rows)
+                                metrics["skill_opd/reward_mapped"] = True
+                                metrics["skill_opd/query_leakage_count"] = sum(
+                                    bool(reflection.rejection_reason)
+                                    and "leakage" in reflection.rejection_reason
+                                    for reflection in reflections
+                                )
+                                metrics["skill_opd/top_k"] = skill_opd_config.get(
+                                    "top_k", 100
+                                )
                             # pad for log_prob
                             # split_mini_batch_scale = 8 # magic number
                             # batch.meta_info["num_repeat"] = self.config.actor_rollout_ref.rollout.n 
@@ -1392,6 +1409,7 @@ class RayPPOTrainer:
                                     teacher_cache,
                                     top_k=skill_opd_config.get("top_k", 100),
                                 )
+                                metrics["skill_opd/teacher_detached"] = True
                                 cache_bytes = sum(
                                     tensor.numel() * tensor.element_size()
                                     for tensor in teacher_cache.batch.values()
@@ -1578,6 +1596,61 @@ class RayPPOTrainer:
 
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
+                        smoke_metrics_path = self.config.get("skill_opd", {}).get(
+                            "smoke_metrics_path", None
+                        )
+                        if smoke_metrics_path:
+                            if self.config.get("skill_opd", {}).get("enable", False):
+                                smoke_report = {
+                                "memory_transition_count": metrics[
+                                    "skill_opd/memory_transition_count"
+                                ],
+                                "final_turn_count": metrics["skill_opd/final_turn_count"],
+                                "trajectory_count": metrics["skill_opd/trajectory_count"],
+                                "reward_mapped": metrics["skill_opd/reward_mapped"],
+                                "reflection_valid": metrics["skill_opd/reflection_valid"],
+                                "reflection_applied": metrics[
+                                    "skill_opd/reflection_applied"
+                                ],
+                                "key_transition_count": metrics[
+                                    "skill_opd/key_transition_count"
+                                ],
+                                "query_leakage_count": metrics[
+                                    "skill_opd/query_leakage_count"
+                                ],
+                                "top_k": metrics["skill_opd/top_k"],
+                                "valid_token_count": metrics[
+                                    "skill_opd/valid_token_count"
+                                ],
+                                "final_token_count": metrics[
+                                    "skill_opd/final_token_count"
+                                ],
+                                "teacher_detached": metrics[
+                                    "skill_opd/teacher_detached"
+                                ],
+                                "rl_loss": metrics["actor/vst_rl_loss"],
+                                "lopd_loss": metrics["actor/lopd_loss"],
+                                "total_loss": metrics["actor/total_loss"],
+                                "cache_bytes": metrics["skill_opd/cache_bytes"],
+                                "optimizer_completed": True,
+                                "trainable_param_max_change": metrics[
+                                    "skill_opd/trainable_param_max_change"
+                                ],
+                                "retained_mass": metrics.get(
+                                    "skill_opd/retained_mass", None
+                                ),
+                                    "policy_version": self.global_steps,
+                                }
+                            else:
+                                smoke_report = {
+                                    "skill_opd_enabled": False,
+                                    "opd_branch_executed": "actor/lopd_loss" in metrics,
+                                    "optimizer_completed": True,
+                                    "rl_loss": metrics["actor/pg_loss"],
+                                }
+                            os.makedirs(os.path.dirname(smoke_metrics_path), exist_ok=True)
+                            with open(smoke_metrics_path, "w", encoding="utf-8") as report_file:
+                                json.dump(smoke_report, report_file, indent=2, sort_keys=True)
 
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
