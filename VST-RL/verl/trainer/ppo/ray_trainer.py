@@ -688,8 +688,25 @@ class RayPPOTrainer:
         iterator = [test_batch_full]
 
         for test_batch in iterator:
+            if self.config.recurrent.enable:
+                from recurrent.interface import make_repeated_rollout_ids
+
+                base_group_uids = np.array(
+                    [str(uuid.uuid4()) for _ in range(len(test_batch.batch))], dtype=object
+                )
+                test_batch.non_tensor_batch["uid"] = base_group_uids
+                test_batch.non_tensor_batch["group_uid"] = base_group_uids.copy()
+
             # repeat test batch
-            test_batch = test_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.val_kwargs.n, interleave=True)
+            val_repeat_times = self.config.actor_rollout_ref.rollout.val_kwargs.n
+            test_batch = test_batch.repeat(repeat_times=val_repeat_times, interleave=True)
+            if self.config.recurrent.enable:
+                repeated_group_uids, trajectory_uids = make_repeated_rollout_ids(
+                    base_group_uids, val_repeat_times
+                )
+                test_batch.non_tensor_batch["uid"] = repeated_group_uids
+                test_batch.non_tensor_batch["group_uid"] = repeated_group_uids.copy()
+                test_batch.non_tensor_batch["trajectory_uid"] = trajectory_uids
 
             # we only do validation on rule-based rm
             if self.config.reward_model.enable and test_batch[0].non_tensor_batch["reward_model"]["style"] == "model":
@@ -751,8 +768,8 @@ class RayPPOTrainer:
                 test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
             else:
                 from recurrent.utils import final_batch
-                test_gen_batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(test_gen_batch.batch))],
-                                                                    dtype=object)
+                for key in ("uid", "group_uid", "trajectory_uid"):
+                    test_gen_batch.non_tensor_batch[key] = test_batch.non_tensor_batch[key].copy()
                 output_gen_batch, final_mask, sample_index = self.generation_manager.run_llm_loop(
                     test_gen_batch, {}, policy_version=self.global_steps
                 )
@@ -1139,15 +1156,27 @@ class RayPPOTrainer:
                         else:
                             if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
                                 raise NotImplementedError("REMAX is not implemented for recurrent.")
-                            batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
-                                                                    dtype=object)
-                            gen_batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(gen_batch.batch))],
-                                                                    dtype=object)
+                            from recurrent.interface import make_repeated_rollout_ids
+
+                            base_group_uids = np.array(
+                                [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
+                            )
+                            batch.non_tensor_batch['uid'] = base_group_uids
+                            batch.non_tensor_batch['group_uid'] = base_group_uids.copy()
+                            gen_batch.non_tensor_batch['uid'] = base_group_uids.copy()
+                            gen_batch.non_tensor_batch['group_uid'] = base_group_uids.copy()
                             # Note that we repeat outside the loop, since the generated responses are not aligned and we cannot
                             # simply union them.
                             # Also, just as what happened in validate, we will always set n=1 in generation_kwargs.
                             batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                             gen_batch = gen_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                            repeated_group_uids, trajectory_uids = make_repeated_rollout_ids(
+                                base_group_uids, self.config.actor_rollout_ref.rollout.n
+                            )
+                            for rollout_batch in (batch, gen_batch):
+                                rollout_batch.non_tensor_batch['uid'] = repeated_group_uids.copy()
+                                rollout_batch.non_tensor_batch['group_uid'] = repeated_group_uids.copy()
+                                rollout_batch.non_tensor_batch['trajectory_uid'] = trajectory_uids.copy()
                             gen_batch_output, final_mask, sample_index = self.generation_manager.run_llm_loop(
                                 gen_batch, timing_raw, policy_version=self.global_steps
                             )

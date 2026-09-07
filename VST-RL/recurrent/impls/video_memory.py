@@ -419,11 +419,13 @@ class VideoMemoryAgent(RAgent):
         self.video_inputs = []
         self.batch_uids = []
         self.pending_turn_metadata = {
+            'group_uid': [],
             'trajectory_uid': [],
             'sample_index': [],
             'transition_index': [],
             'previous_memory_tokens': [],
             'current_chunk_boundary': [],
+            'final_mask': [],
         }
 
         for idx in tqdm(target_indices):
@@ -452,7 +454,8 @@ class VideoMemoryAgent(RAgent):
             s_time = s_idx * t_factor
             e_time = e_idx * t_factor
 
-            self.pending_turn_metadata['trajectory_uid'].append(batch_data['uid'][idx])
+            self.pending_turn_metadata['group_uid'].append(batch_data['group_uid'][idx])
+            self.pending_turn_metadata['trajectory_uid'].append(batch_data['trajectory_uid'][idx])
             self.pending_turn_metadata['sample_index'].append(idx)
             self.pending_turn_metadata['transition_index'].append(None if is_final_turn else self.step)
             previous_memory = None
@@ -463,6 +466,7 @@ class VideoMemoryAgent(RAgent):
                 'frames': [s_idx, e_idx],
                 'seconds': [float(s_time), float(e_time)],
             })
+            self.pending_turn_metadata['final_mask'].append(is_final_turn)
             
             ts_str = f"Time={s_time:.1f}-{e_time:.1f}s"
             ts_tokens = self.tokenizer.encode(ts_str, add_special_tokens=False)
@@ -596,6 +600,7 @@ class VideoMemoryAgent(RAgent):
             return result
 
         gen_output.non_tensor_batch.update({
+            'group_uid': object_array(self.pending_turn_metadata['group_uid']),
             'trajectory_uid': object_array(self.pending_turn_metadata['trajectory_uid']),
             'sample_index': np.asarray(self.pending_turn_metadata['sample_index'], dtype=np.int64),
             'transition_index': object_array(self.pending_turn_metadata['transition_index']),
@@ -603,6 +608,7 @@ class VideoMemoryAgent(RAgent):
             'current_chunk_boundary': object_array(self.pending_turn_metadata['current_chunk_boundary']),
             'generated_y_t_tokens': object_array(generated_tokens),
             'updated_memory_tokens': object_array(updated_memory_tokens),
+            'final_mask': np.asarray(self.pending_turn_metadata['final_mask'], dtype=np.bool_),
         })
 
         self.log_step(gen_output)

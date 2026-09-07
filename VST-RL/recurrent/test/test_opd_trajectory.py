@@ -10,7 +10,11 @@ import torch
 
 sys.modules.setdefault("lmdb", SimpleNamespace())
 
-from recurrent.interface import aggregate_trajectories, propagate_trajectory_reward
+from recurrent.interface import (
+    aggregate_trajectories,
+    make_repeated_rollout_ids,
+    propagate_trajectory_reward,
+)
 from recurrent.impls.video_memory import TEMPLATE_TYPE_2, VideoMemoryAgent
 from recurrent.generation_manager import LLMGenerationManager
 from verl.protocol import DataProto
@@ -54,6 +58,7 @@ def _synthetic_recurrent_output():
             ),
         },
         non_tensors={
+            "group_uid": np.array(["group-a", "group-b", "group-a", "group-a", "group-b"], dtype=object),
             "trajectory_uid": np.array(["a", "b", "a", "a", "b"], dtype=object),
             "sample_index": np.array([0, 1, 0, 0, 1], dtype=np.int64),
             "transition_index": np.array([0, 0, 1, None, None], dtype=object),
@@ -71,6 +76,7 @@ def _synthetic_recurrent_output():
             "generated_y_t_tokens": np.array([[10], [20], [11, 12], None, None], dtype=object),
             "updated_memory_tokens": np.array([[10], [20], [10, 11, 12], None, None], dtype=object),
             "policy_version": np.array([7, 7, 7, 7, 7], dtype=np.int64),
+            "final_mask": np.array([False, False, False, True, True], dtype=np.bool_),
         },
     )
 
@@ -95,12 +101,24 @@ def test_aggregate_trajectories_orders_transitions_before_final():
 )
 def test_aggregate_trajectories_rejects_malformed_turns(final_mask, transition_index, message):
     output = _synthetic_recurrent_output()
+    output.non_tensor_batch["final_mask"] = np.array(final_mask, dtype=np.bool_)
     output.non_tensor_batch["transition_index"] = np.array(transition_index, dtype=object)
 
     with pytest.raises(ValueError, match=message):
         aggregate_trajectories(
             output,
             torch.tensor(final_mask),
+            torch.tensor([0, 1, 0, 0, 1]),
+        )
+
+
+def test_aggregate_trajectories_rejects_misaligned_final_mask_metadata():
+    output = _synthetic_recurrent_output()
+
+    with pytest.raises(ValueError, match="metadata final_mask"):
+        aggregate_trajectories(
+            output,
+            torch.tensor([False, False, False, False, True]),
             torch.tensor([0, 1, 0, 0, 1]),
         )
 
@@ -179,6 +197,8 @@ def _video_agent_for_action(step, guarded):
             dtype=object,
         ),
         "uid": np.array(["trajectory-a"], dtype=object),
+        "group_uid": np.array(["group-a"], dtype=object),
+        "trajectory_uid": np.array(["group-a:rollout-0"], dtype=object),
         "prompt_ids": np.array([[71, 72]], dtype=object),
         "question_ids": np.array([[61]], dtype=object),
     }
@@ -233,6 +253,11 @@ def test_three_chunks_emit_two_memory_transitions_and_one_final_row():
         outputs.append(agent.update(_generation_output(response_token)))
 
     assert torch.cat(agent.final_mask_list).tolist() == [False, False, True]
+    assert [output.non_tensor_batch["group_uid"][0] for output in outputs] == ["group-a"] * 3
+    assert [output.non_tensor_batch["trajectory_uid"][0] for output in outputs] == [
+        "group-a:rollout-0"
+    ] * 3
+    assert [output.non_tensor_batch["final_mask"][0] for output in outputs] == [False, False, True]
     assert [output.non_tensor_batch["transition_index"][0] for output in outputs] == [0, 1, None]
     assert outputs[0].non_tensor_batch["previous_memory_tokens"][0] == [91]
     assert outputs[0].non_tensor_batch["generated_y_t_tokens"][0] == [5]
@@ -322,3 +347,19 @@ def test_recurrent_trainer_passes_policy_version_and_uses_uid_checked_reward():
     assert "propagate_trajectory_reward(" in trainer_source
     assert "batch.batch['trajectory_reward'] = trajectory_reward" in trainer_source
     assert "batch.batch['token_level_scores'] = batch.batch['trajectory_reward']" in trainer_source
+
+
+def test_make_repeated_rollout_ids_separates_group_and_trajectory_identity():
+    group_uid, trajectory_uid = make_repeated_rollout_ids(
+        np.array(["prompt-a", "prompt-b"], dtype=object), repeat_times=2
+    )
+
+    assert group_uid.tolist() == ["prompt-a", "prompt-a", "prompt-b", "prompt-b"]
+    assert trajectory_uid.tolist() == [
+        "prompt-a:rollout-0",
+        "prompt-a:rollout-1",
+        "prompt-b:rollout-0",
+        "prompt-b:rollout-1",
+    ]
+    assert len(set(trajectory_uid)) == 4
+    assert all(group != trajectory for group, trajectory in zip(group_uid, trajectory_uid))

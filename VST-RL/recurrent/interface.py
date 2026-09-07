@@ -27,6 +27,7 @@ from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
 
 
 RECURRENT_TURN_METADATA_KEYS = (
+    "group_uid",
     "trajectory_uid",
     "sample_index",
     "transition_index",
@@ -35,6 +36,7 @@ RECURRENT_TURN_METADATA_KEYS = (
     "generated_y_t_tokens",
     "updated_memory_tokens",
     "policy_version",
+    "final_mask",
 )
 
 _TRANSITION_ONLY_KEYS = (
@@ -51,6 +53,27 @@ def _as_list(value):
     if isinstance(value, np.ndarray):
         return value.tolist()
     return list(value)
+
+
+def make_repeated_rollout_ids(group_uids, repeat_times: int):
+    """Repeat GRPO group IDs while assigning a unique ID to each sampled rollout."""
+    if not isinstance(repeat_times, int) or repeat_times < 1:
+        raise ValueError("repeat_times must be a positive integer")
+
+    group_uids = np.asarray(group_uids, dtype=object)
+    if group_uids.ndim != 1 or len(set(group_uids.tolist())) != len(group_uids):
+        raise ValueError("group_uids must be a one-dimensional array of unique IDs")
+
+    repeated_group_uids = np.repeat(group_uids, repeat_times)
+    trajectory_uids = np.asarray(
+        [
+            f"{group_uid}:rollout-{rollout_index}"
+            for group_uid in group_uids
+            for rollout_index in range(repeat_times)
+        ],
+        dtype=object,
+    )
+    return repeated_group_uids, trajectory_uids
 
 
 def validate_recurrent_turns(
@@ -78,6 +101,11 @@ def validate_recurrent_turns(
         raise ValueError("metadata sample_index does not match rollout sample_index")
 
     final_rows = _as_list(final_mask)
+    metadata_final_rows = _as_list(output.non_tensor_batch["final_mask"])
+    if metadata_final_rows != final_rows:
+        raise ValueError("metadata final_mask does not match rollout final_mask")
+
+    group_uids = _as_list(output.non_tensor_batch["group_uid"])
     uids = _as_list(output.non_tensor_batch["trajectory_uid"])
     transition_indices = _as_list(output.non_tensor_batch["transition_index"])
     policy_versions = _as_list(output.non_tensor_batch["policy_version"])
@@ -89,6 +117,12 @@ def validate_recurrent_turns(
         rows_by_uid.setdefault(uid, []).append(row)
 
     for uid, rows in rows_by_uid.items():
+        uid_group_uids = {group_uids[row] for row in rows}
+        if len(uid_group_uids) != 1:
+            raise ValueError(f"trajectory_uid {uid!r} maps to multiple group_uid values")
+        if uid in uid_group_uids:
+            raise ValueError("trajectory_uid must be distinct from group_uid")
+
         uid_sample_indices = {expected_sample_index[row] for row in rows}
         if len(uid_sample_indices) != 1:
             raise ValueError(f"trajectory_uid {uid!r} maps to multiple sample_index values")
@@ -106,6 +140,10 @@ def validate_recurrent_turns(
         for key in _TRANSITION_ONLY_KEYS:
             if output.non_tensor_batch[key][final_row] is not None:
                 raise ValueError(f"final row must set {key} to None")
+
+    final_uids = [uids[row] for row, is_final in enumerate(final_rows) if is_final]
+    if len(set(final_uids)) != len(final_uids):
+        raise ValueError("each final row must have a unique trajectory_uid")
 
 
 def aggregate_trajectories(
