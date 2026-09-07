@@ -169,6 +169,17 @@ class LLMGenerationManager:
         )
 
     @staticmethod
+    def _attach_turn_inputs(gen_output: DataProto, vid_message, vid_inputs) -> None:
+        if len(gen_output) != len(vid_message) or len(gen_output) != len(vid_inputs):
+            raise ValueError("turn video inputs must be row-aligned with generation output")
+        gen_output.non_tensor_batch["multi_modal_data"] = np.asarray(
+            vid_message, dtype=object
+        )
+        gen_output.non_tensor_batch["multi_modal_inputs"] = np.asarray(
+            vid_inputs, dtype=object
+        )
+
+    @staticmethod
     def _concat_and_validate(gen_output_list, final_mask, sample_index) -> DataProto:
         output = DataProto.concat(gen_output_list)
         output.batch['final_mask'] = final_mask.to(output.batch.device)
@@ -208,7 +219,7 @@ class LLMGenerationManager:
             with _timer('mt_update', timing_raw):
                 gen_output = self.agent.update(gen_output)
                 self._annotate_turn_output(gen_output, policy_version)
-                # gen_output.non_tensor_batch['multi_modal_inputs'] = vid_inputs
+                self._attach_turn_inputs(gen_output, vid_message, vid_inputs)
                 gen_output_list.append(gen_output)
                 logger.info('agent update done')
         final_mask, sample_index = self.agent.end()

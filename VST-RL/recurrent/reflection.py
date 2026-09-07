@@ -140,7 +140,10 @@ Reward: {trajectory.reward}
 
 For apply_opd=true use exactly: apply_opd, episode_skill, key_transitions.
 Each key transition uses exactly: transition_index, kind, memory_attribute, step_skill.
+kind must be preserve or correct.
+memory_attribute must be one of: entity_identity, state_change, temporal_order, event_existence, count, spatial_relation, visible_text, compression.
 For apply_opd=false set episode_skill=null and key_transitions=[] and include skip_reason.
+skip_reason must be one of: memory_cause_uncertain, answer_only_error, insufficient_evidence, invalid_trajectory.
 """
     prompt_tokens = (
         len(tokenizer.encode(prompt, add_special_tokens=False))

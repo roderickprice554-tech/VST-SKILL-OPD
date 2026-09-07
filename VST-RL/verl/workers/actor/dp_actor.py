@@ -251,6 +251,161 @@ class DataParallelPPOActor(BasePPOActor):
 
             return entropy, log_probs
 
+    def _forward_opd_teacher_topk(self, data, top_k: int, temperature: float):
+        """Forward the current Actor and immediately compress response logits to teacher top-k."""
+        from verl.trainer.ppo.skill_opd_loss import build_teacher_topk
+
+        response_length = data["responses"].size(-1)
+        multi_modal_inputs = {}
+        if "multi_modal_inputs" in data:
+            for key in data["multi_modal_inputs"][0].keys():
+                if key != "second_per_grid_ts":
+                    multi_modal_inputs[key] = torch.cat(
+                        [inputs[key] for inputs in data["multi_modal_inputs"]], dim=0
+                    )
+
+        input_ids = data["input_ids"]
+        attention_mask = data["attention_mask"]
+        position_ids = data["position_ids"]
+        if position_ids.dim() == 3:
+            position_ids = position_ids.transpose(0, 1)
+
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16), torch.no_grad():
+            if not self.use_remove_padding:
+                output = self.actor_module(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    **multi_modal_inputs,
+                    use_cache=False,
+                )
+                response_logits = output.logits[:, -response_length - 1:-1, :]
+                return build_teacher_topk(response_logits, top_k, temperature)
+
+            if self.use_ulysses_sp:
+                raise NotImplementedError("Skill OPD teacher cache does not support Ulysses SP")
+            batch_size, sequence_length = input_ids.shape
+            input_ids_rmpad, unpad_indices, *_ = unpad_input(
+                input_ids.unsqueeze(-1), attention_mask
+            )
+            input_ids_rmpad = input_ids_rmpad.transpose(0, 1)
+            if position_ids.dim() == 3:
+                position_ids_rmpad = index_first_axis(
+                    rearrange(position_ids, "c b s ... -> (b s) c ..."), unpad_indices
+                ).transpose(0, 1).unsqueeze(1)
+            else:
+                position_ids_rmpad = index_first_axis(
+                    rearrange(position_ids.unsqueeze(-1), "b s ... -> (b s) ..."),
+                    unpad_indices,
+                ).transpose(0, 1)
+            output = self.actor_module(
+                input_ids=input_ids_rmpad,
+                attention_mask=None,
+                position_ids=position_ids_rmpad,
+                **multi_modal_inputs,
+                use_cache=False,
+            )
+            indices, log_probs, retained_mass = build_teacher_topk(
+                output.logits.squeeze(0), top_k, temperature
+            )
+            full_indices = pad_input(
+                indices, unpad_indices, batch_size, sequence_length
+            )[:, -response_length - 1:-1]
+            full_log_probs = pad_input(
+                log_probs, unpad_indices, batch_size, sequence_length
+            )[:, -response_length - 1:-1]
+            full_retained_mass = pad_input(
+                retained_mass.unsqueeze(-1), unpad_indices, batch_size, sequence_length
+            ).squeeze(-1)[:, -response_length - 1:-1]
+            return full_indices, full_log_probs, full_retained_mass
+
+    def compute_opd_teacher_cache(self, data: DataProto, top_k: int, temperature: float):
+        was_training = self.actor_module.training
+        self.actor_module.eval()
+        try:
+            model_data = {
+                **data.batch,
+                **data.non_tensor_batch,
+            }
+            indices, log_probs, retained_mass = self._forward_opd_teacher_topk(
+                model_data, top_k, temperature
+            )
+        finally:
+            self.actor_module.train(was_training)
+        return {
+            "opd_topk_indices": indices.detach(),
+            "opd_teacher_topk_log_probs": log_probs.detach().to(torch.bfloat16),
+            "opd_retained_mass": retained_mass.detach(),
+            "opd_valid_token_mask": data.batch["opd_valid_token_mask"].detach(),
+        }
+
+    def _forward_opd_student_selected(self, data, topk_indices):
+        """Gather trainable student logits only on the cached teacher support."""
+        response_length = data["responses"].size(-1)
+        multi_modal_inputs = {}
+        if "multi_modal_inputs" in data:
+            for key in data["multi_modal_inputs"][0].keys():
+                if key != "second_per_grid_ts":
+                    multi_modal_inputs[key] = torch.cat(
+                        [inputs[key] for inputs in data["multi_modal_inputs"]], dim=0
+                    )
+        input_ids = data["input_ids"]
+        attention_mask = data["attention_mask"]
+        position_ids = data["position_ids"]
+        if position_ids.dim() == 3:
+            position_ids = position_ids.transpose(0, 1)
+
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            if not self.use_remove_padding:
+                output = self.actor_module(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    **multi_modal_inputs,
+                    use_cache=False,
+                )
+                response_logits = output.logits[:, -response_length - 1:-1, :]
+                return torch.gather(response_logits, -1, topk_indices)
+
+            if self.use_ulysses_sp:
+                raise NotImplementedError("Skill OPD student loss does not support Ulysses SP")
+            batch_size, sequence_length = input_ids.shape
+            input_ids_rmpad, unpad_indices, *_ = unpad_input(
+                input_ids.unsqueeze(-1), attention_mask
+            )
+            input_ids_rmpad = input_ids_rmpad.transpose(0, 1)
+            if position_ids.dim() == 3:
+                position_ids_rmpad = index_first_axis(
+                    rearrange(position_ids, "c b s ... -> (b s) c ..."), unpad_indices
+                ).transpose(0, 1).unsqueeze(1)
+            else:
+                position_ids_rmpad = index_first_axis(
+                    rearrange(position_ids.unsqueeze(-1), "b s ... -> (b s) ..."),
+                    unpad_indices,
+                ).transpose(0, 1)
+            full_support = torch.zeros(
+                batch_size,
+                sequence_length,
+                topk_indices.shape[-1],
+                dtype=topk_indices.dtype,
+                device=topk_indices.device,
+            )
+            full_support[:, -response_length - 1:-1] = topk_indices
+            support_rmpad = index_first_axis(
+                rearrange(full_support, "b s k -> (b s) k"), unpad_indices
+            )
+            output = self.actor_module(
+                input_ids=input_ids_rmpad,
+                attention_mask=None,
+                position_ids=position_ids_rmpad,
+                **multi_modal_inputs,
+                use_cache=False,
+            )
+            selected = torch.gather(output.logits.squeeze(0), -1, support_rmpad)
+            return pad_input(
+                selected, unpad_indices, batch_size, sequence_length
+            )[:, -response_length - 1:-1]
+
     def _optimizer_step(self):
         assert self.config.grad_clip is not None
 
@@ -473,6 +628,8 @@ class DataParallelPPOActor(BasePPOActor):
     def update_policy(self, data: DataProto):
         self.actor_module.train()
         temperature = data.meta_info["temperature"]
+        skill_opd_enabled = data.meta_info.get("skill_opd", {}).get("enable", False)
+        skill_opd_config = data.meta_info.get("skill_opd", {})
 
         # ============================================================
         # Step 1: 确定需要选择的 keys
@@ -483,6 +640,15 @@ class DataParallelPPOActor(BasePPOActor):
         ]
         if self.config.use_kl_loss:
             select_keys.append('ref_log_prob')
+        if skill_opd_enabled:
+            select_keys.extend([
+                "opd_topk_indices",
+                "opd_teacher_topk_log_probs",
+                "opd_memory_mask",
+                "opd_key_mask",
+                "opd_reflection_mask",
+                "opd_metadata_mask",
+            ])
 
         has_multi_modal_inputs = 'multi_modal_inputs' in data.non_tensor_batch
         has_multi_modal_embeds = 'multi_modal_embeds' in data.non_tensor_batch
@@ -659,6 +825,45 @@ class DataParallelPPOActor(BasePPOActor):
                         policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
                         metrics["actor/kl_loss"] = kl_loss.detach().item()
                         metrics["actor/kl_coef"] = self.config.kl_loss_coef
+
+                    vst_rl_loss = policy_loss
+                    if skill_opd_enabled:
+                        from verl.trainer.ppo.skill_opd_loss import (
+                            combine_vst_rl_and_opd_loss,
+                            localized_topk_opd_loss,
+                        )
+
+                        selected_student_logits = self._forward_opd_student_selected(
+                            data, data["opd_topk_indices"]
+                        )
+                        lopd_loss, lopd_metrics = localized_topk_opd_loss(
+                            selected_student_logits,
+                            torch.arange(
+                                selected_student_logits.shape[-1],
+                                device=selected_student_logits.device,
+                            ).expand_as(data["opd_topk_indices"]),
+                            data["opd_teacher_topk_log_probs"],
+                            response_mask,
+                            data["opd_memory_mask"],
+                            data["opd_key_mask"],
+                            data["opd_reflection_mask"],
+                            data["opd_metadata_mask"],
+                        )
+                        policy_loss = combine_vst_rl_and_opd_loss(
+                            vst_rl_loss,
+                            lopd_loss,
+                            enabled=True,
+                            lambda_opd=skill_opd_config.get("lambda_opd", 0.01),
+                        )
+                        metrics["actor/vst_rl_loss"] = vst_rl_loss.detach().item()
+                        metrics["actor/lopd_loss"] = lopd_loss.detach().item()
+                        metrics["actor/weighted_lopd_loss"] = (
+                            lopd_loss.detach().item()
+                            * skill_opd_config.get("lambda_opd", 0.01)
+                        )
+                        metrics["actor/total_loss"] = policy_loss.detach().item()
+                        for metric_key, metric_value in lopd_metrics.items():
+                            metrics[metric_key] = metric_value
 
                     ######
                     # MODIFY: we have to fix grad_acc computation: weighted averaging by token num in stead of len(data)
@@ -903,4 +1108,3 @@ class DataParallelPPOActor(BasePPOActor):
 
     #     self.actor_optimizer.zero_grad()
     #     return metrics
-

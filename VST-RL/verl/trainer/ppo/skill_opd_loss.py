@@ -1,6 +1,20 @@
 import torch
 
 
+def combine_vst_rl_and_opd_loss(
+    vst_rl_loss: torch.Tensor,
+    opd_loss: torch.Tensor | None,
+    *,
+    enabled: bool,
+    lambda_opd: float,
+) -> torch.Tensor:
+    if not enabled:
+        return vst_rl_loss
+    if opd_loss is None:
+        raise ValueError("enabled Skill OPD requires an OPD loss")
+    return vst_rl_loss + lambda_opd * opd_loss
+
+
 def build_teacher_topk(
     teacher_logits: torch.Tensor,
     top_k: int,

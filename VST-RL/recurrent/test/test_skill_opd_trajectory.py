@@ -2,7 +2,12 @@ import numpy as np
 import pytest
 import torch
 
-from recurrent.skill_opd import assemble_reflection_trajectories
+from recurrent.reflection import parse_and_validate_reflection
+from recurrent.skill_opd import (
+    SkillOPDManager,
+    assemble_reflection_trajectories,
+    build_opd_annotations,
+)
 from verl.protocol import DataProto
 
 
@@ -104,3 +109,81 @@ def test_assembly_rejects_query_lookup_that_does_not_cover_final_sample():
             prediction_text_by_final_row={2: "A", 3: "B"},
             observed_video_by_sample={0: "video-zero", 1: "video-one"},
         )
+
+
+class _ReflectionTokenizer:
+    pad_token_id = 0
+    eos_token_id = 99
+
+    def decode(self, tokens, skip_special_tokens=True):
+        return (
+            '{"apply_opd":true,"episode_skill":"Track stable identities across views.",'
+            '"key_transitions":[{"transition_index":0,"kind":"correct",'
+            '"memory_attribute":"entity_identity","step_skill":"Preserve object identity across cuts."}]}'
+        )
+
+
+class _RecordingWorker:
+    world_size = 1
+
+    def __init__(self, events):
+        self.events = events
+
+    def generate_sequences(self, batch):
+        self.events.append("reflection")
+        assert "ground_truth" not in batch.non_tensor_batch
+        assert "correct_answer" not in batch.non_tensor_batch
+        return DataProto.from_dict(tensors={"responses": torch.tensor([[7, 99]])})
+
+
+def test_reflection_generation_occurs_after_reward_and_before_actor_update(monkeypatch):
+    events = ["rollout", "reward"]
+    manager = SkillOPDManager(_ReflectionTokenizer(), processor=None)
+    monkeypatch.setattr(
+        manager,
+        "_build_reflection_batch",
+        lambda trajectories: DataProto.from_dict(
+            tensors={"input_ids": torch.tensor([[1]])},
+            non_tensors={"trajectory_uid": np.array([trajectories[0].trajectory_uid], dtype=object)},
+        ),
+    )
+
+    reflections = manager.generate_reflections([_assemble()[0]], _RecordingWorker(events))
+    events.append("update_actor")
+
+    assert events == ["rollout", "reward", "reflection", "update_actor"]
+    assert reflections[0].reflection_valid is True
+
+
+def test_invalid_reflection_produces_zero_opd_masks_without_changing_rl_mask():
+    output = _output()
+    trajectories = _assemble(output=output)
+    valid = parse_and_validate_reflection(
+        _ReflectionTokenizer().decode([]), trajectories[0], policy_version=9
+    )
+    invalid = parse_and_validate_reflection("not json", trajectories[1], policy_version=9)
+    original_response_mask = output.batch["response_mask"].clone()
+
+    annotations = build_opd_annotations(output, trajectories, [valid, invalid])
+
+    assert torch.equal(output.batch["response_mask"], original_response_mask)
+    assert annotations["opd_key_mask"].tolist() == [[True, False], [False, False], [False, False], [False, False]]
+    assert annotations["opd_reflection_mask"].tolist() == [[True, True], [False, False], [False, False], [False, False]]
+    assert annotations["opd_memory_mask"][2:].sum().item() == 0
+    assert annotations["opd_step_skill"].tolist() == [
+        "Preserve object identity across cuts.", None, None, None
+    ]
+
+
+def test_default_config_keeps_skill_opd_disabled():
+    config_text = (
+        __import__("pathlib").Path(__file__).resolve().parents[2]
+        / "verl"
+        / "trainer"
+        / "config"
+        / "ppo_trainer.yaml"
+    ).read_text(encoding="utf-8")
+
+    assert "skill_opd:\n  enable: false" in config_text
+    assert "top_k: 100" in config_text
+    assert "lambda_opd: 0.01" in config_text

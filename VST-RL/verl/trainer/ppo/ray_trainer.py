@@ -1251,7 +1251,11 @@ class RayPPOTrainer:
                             batch.batch['trajectory_reward'] = trajectory_reward
                             skill_opd_config = self.config.get("skill_opd", {})
                             if skill_opd_config.get("enable", False):
-                                from recurrent.skill_opd import assemble_reflection_trajectories
+                                from recurrent.skill_opd import (
+                                    SkillOPDManager,
+                                    assemble_reflection_trajectories,
+                                    build_opd_annotations,
+                                )
 
                                 final_rows = torch.nonzero(final_mask, as_tuple=False).squeeze(-1).tolist()
                                 rewards_by_trajectory = {
@@ -1295,11 +1299,129 @@ class RayPPOTrainer:
                                     prediction_text_by_final_row=prediction_text_by_final_row,
                                     observed_video_by_sample=observed_video_by_sample,
                                 )
+                                reflection_config = skill_opd_config.get("reflection", {})
+                                skill_opd_manager = SkillOPDManager(
+                                    self.tokenizer,
+                                    self.processor,
+                                    max_key_transitions=skill_opd_config.get(
+                                        "max_key_transitions", 3
+                                    ),
+                                    max_output_tokens=reflection_config.get("max_tokens", 256),
+                                    max_context_tokens=reflection_config.get(
+                                        "max_context_tokens", 32768
+                                    ),
+                                )
+                                reflections = skill_opd_manager.generate_reflections(
+                                    reflection_trajectories, self.actor_rollout_wg
+                                )
+                                opd_annotations = build_opd_annotations(
+                                    batch, reflection_trajectories, reflections
+                                )
+                                for key, value in opd_annotations.items():
+                                    if isinstance(value, torch.Tensor):
+                                        batch.batch[key] = value
+                                    else:
+                                        batch.non_tensor_batch[key] = value
+                                metrics["skill_opd/reflection_valid"] = sum(
+                                    reflection.reflection_valid for reflection in reflections
+                                )
+                                metrics["skill_opd/reflection_applied"] = sum(
+                                    reflection.reflection_valid and reflection.apply_opd
+                                    for reflection in reflections
+                                )
+                                metrics["skill_opd/key_transition_count"] = sum(
+                                    len(reflection.key_transitions)
+                                    for reflection in reflections
+                                    if reflection.reflection_valid
+                                )
                             # pad for log_prob
                             # split_mini_batch_scale = 8 # magic number
                             # batch.meta_info["num_repeat"] = self.config.actor_rollout_ref.rollout.n 
                             batch.non_tensor_batch["vid_uid"] = gen_uid
                             batch, pad_size = pad_dataproto_to_divisor(batch, self.actor_rollout_wg.world_size)
+                            if skill_opd_config.get("enable", False):
+                                from recurrent.skill_opd import (
+                                    augment_teacher_inputs,
+                                    validate_opd_teacher_cache,
+                                )
+                                from recurrent.utils import create_position_ids_vl
+
+                                teacher_skills = np.empty(len(batch), dtype=object)
+                                teacher_skills[:] = None
+                                for row, (episode_skill, step_skill) in enumerate(
+                                    zip(
+                                        batch.non_tensor_batch["opd_episode_skill"],
+                                        batch.non_tensor_batch["opd_step_skill"],
+                                    )
+                                ):
+                                    if step_skill is not None:
+                                        teacher_skills[row] = (
+                                            f"Episode skill: {episode_skill}\n"
+                                            f"Step skill: {step_skill}"
+                                        )
+                                teacher_batch = deepcopy(batch)
+                                teacher_input_ids, teacher_attention_mask = augment_teacher_inputs(
+                                    teacher_batch.batch["input_ids"],
+                                    teacher_batch.batch["attention_mask"],
+                                    teacher_batch.batch["responses"],
+                                    teacher_skills,
+                                    self.tokenizer,
+                                    max_context_tokens=reflection_config.get(
+                                        "max_context_tokens", 32768
+                                    ),
+                                )
+                                teacher_batch.batch["input_ids"] = teacher_input_ids
+                                teacher_batch.batch["attention_mask"] = teacher_attention_mask
+                                teacher_batch.batch["position_ids"] = create_position_ids_vl(
+                                    teacher_attention_mask,
+                                    self.processor,
+                                    teacher_batch.non_tensor_batch["multi_modal_inputs"],
+                                    teacher_input_ids,
+                                )
+                                teacher_batch.meta_info["skill_opd_top_k"] = skill_opd_config.get(
+                                    "top_k", 100
+                                )
+                                teacher_batch.meta_info[
+                                    "skill_opd_teacher_temperature"
+                                ] = skill_opd_config.get("teacher_temperature", 1.0)
+                                teacher_cache = self.actor_rollout_wg.compute_opd_teacher_cache(
+                                    teacher_batch
+                                )
+                                validate_opd_teacher_cache(
+                                    batch,
+                                    teacher_cache,
+                                    top_k=skill_opd_config.get("top_k", 100),
+                                )
+                                cache_bytes = sum(
+                                    tensor.numel() * tensor.element_size()
+                                    for tensor in teacher_cache.batch.values()
+                                )
+                                metrics["skill_opd/cache_bytes"] = cache_bytes
+                                valid_teacher_tokens = teacher_cache.batch[
+                                    "opd_valid_token_mask"
+                                ].bool()
+                                metrics["skill_opd/valid_token_count"] = int(
+                                    valid_teacher_tokens.sum().item()
+                                )
+                                metrics["skill_opd/final_token_count"] = int(
+                                    (
+                                        valid_teacher_tokens
+                                        & batch.batch["final_mask"].unsqueeze(-1)
+                                    ).sum().item()
+                                )
+                                if valid_teacher_tokens.any():
+                                    metrics["skill_opd/retained_mass"] = float(
+                                        teacher_cache.batch["opd_retained_mass"][
+                                            valid_teacher_tokens
+                                        ].float().mean().item()
+                                    )
+                                for key, tensor in teacher_cache.batch.items():
+                                    batch.batch[key] = tensor
+                                batch.meta_info["skill_opd"] = {
+                                    "enable": True,
+                                    "lambda_opd": skill_opd_config.get("lambda_opd", 0.01),
+                                    "top_k": skill_opd_config.get("top_k", 100),
+                                }
                             
                     if self.config.recurrent.enable and self.config.algorithm.get("filter_groups", None): 
                         # NOTE: When prompts after filtering is less than train batch size,

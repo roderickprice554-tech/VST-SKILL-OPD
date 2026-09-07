@@ -273,5 +273,18 @@ recurrent:
     config:
       max_turn: 5
       max_generation_per_turn: 256
+
+skill_opd:
+  enable: false
+  mode: localized
+  top_k: 100
+  teacher_temperature: 1.0
+  lambda_opd: 0.01
+  max_key_transitions: 3
+  reflection:
+    temperature: 0
+    top_p: 1.0
+    max_tokens: 256
+    max_context_tokens: 32768
 ray_init:
   num_cpus: null # `None` means using all CPUs, which might cause hang if limited in systems like SLURM. Please set to a number allowed then.

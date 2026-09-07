@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+import numpy as np
 import torch
 
 from recurrent.interface import aggregate_trajectories
@@ -143,3 +144,284 @@ def assemble_reflection_trajectories(
         )
 
     return assembled
+
+
+def build_opd_annotations(output, trajectories, reflections):
+    """Map validated reflection decisions to row-aligned masks and skill strings."""
+    if len(trajectories) != len(reflections):
+        raise ValueError("trajectory and reflection counts must match")
+    response_shape = output.batch["response_mask"].shape
+    device = output.batch["response_mask"].device
+    key_mask = torch.zeros(response_shape, dtype=torch.bool, device=device)
+    reflection_mask = torch.zeros_like(key_mask)
+    metadata_mask = torch.zeros_like(key_mask)
+    final_rows = torch.as_tensor(
+        np.asarray(output.non_tensor_batch["final_mask"].tolist(), dtype=np.bool_),
+        dtype=torch.bool,
+        device=device,
+    )
+    memory_mask = (~final_rows).unsqueeze(-1).expand(response_shape).clone()
+    episode_skills = np.empty(len(output), dtype=object)
+    step_skills = np.empty(len(output), dtype=object)
+    episode_skills[:] = None
+    step_skills[:] = None
+
+    for trajectory, reflection in zip(trajectories, reflections):
+        metadata_valid = (
+            reflection.trajectory_uid == trajectory.trajectory_uid
+            and reflection.policy_version == trajectory.policy_version
+        )
+        if not (reflection.reflection_valid and reflection.apply_opd and metadata_valid):
+            continue
+        rows_by_transition = {
+            transition.transition_index: transition.row_index
+            for transition in trajectory.transitions
+        }
+        for key_transition in reflection.key_transitions:
+            row = rows_by_transition[key_transition.transition_index]
+            key_mask[row] = output.batch["response_mask"][row].bool()
+            reflection_mask[row] = True
+            metadata_mask[row] = True
+            episode_skills[row] = reflection.episode_skill
+            step_skills[row] = key_transition.step_skill
+
+    valid_token_mask = (
+        output.batch["response_mask"].bool()
+        & memory_mask
+        & key_mask
+        & reflection_mask
+        & metadata_mask
+    )
+    return {
+        "opd_memory_mask": memory_mask,
+        "opd_key_mask": key_mask,
+        "opd_reflection_mask": reflection_mask,
+        "opd_metadata_mask": metadata_mask,
+        "opd_valid_token_mask": valid_token_mask,
+        "opd_episode_skill": episode_skills,
+        "opd_step_skill": step_skills,
+    }
+
+
+def augment_teacher_inputs(
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    responses: torch.Tensor,
+    step_skills,
+    tokenizer,
+    *,
+    max_context_tokens: int = 32768,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Insert query-independent skill tokens before the original response tokens."""
+    if len(input_ids) != len(step_skills):
+        raise ValueError("step skills must be row-aligned")
+    response_length = responses.shape[-1]
+    prompt_length = input_ids.shape[-1] - response_length
+    prompt_rows = []
+    for row, skill in enumerate(step_skills):
+        prompt = input_ids[row, :prompt_length][attention_mask[row, :prompt_length].bool()]
+        if skill is not None:
+            skill_tokens = tokenizer.encode(
+                f"\n[Query-independent memory skill]\n{skill}\n",
+                add_special_tokens=False,
+            )
+            prompt = torch.cat(
+                [prompt, torch.as_tensor(skill_tokens, dtype=input_ids.dtype, device=input_ids.device)]
+            )
+        if len(prompt) + response_length > max_context_tokens:
+            raise ValueError("skill-augmented teacher context exceeds context limit")
+        prompt_rows.append(prompt)
+
+    augmented_prompt_length = max(len(prompt) for prompt in prompt_rows)
+    padded_prompts = torch.full(
+        (len(prompt_rows), augmented_prompt_length),
+        tokenizer.pad_token_id,
+        dtype=input_ids.dtype,
+        device=input_ids.device,
+    )
+    prompt_attention = torch.zeros_like(padded_prompts)
+    for row, prompt in enumerate(prompt_rows):
+        padded_prompts[row, -len(prompt):] = prompt
+        prompt_attention[row, -len(prompt):] = 1
+    augmented_ids = torch.cat([padded_prompts, responses.to(input_ids.device)], dim=-1)
+    augmented_attention = torch.cat(
+        [prompt_attention, attention_mask[:, -response_length:]], dim=-1
+    )
+    return augmented_ids, augmented_attention
+
+
+def validate_opd_teacher_cache(rollout: DataProto, cache: DataProto, top_k: int) -> None:
+    required_tensors = {
+        "opd_topk_indices",
+        "opd_teacher_topk_log_probs",
+        "opd_retained_mass",
+        "opd_valid_token_mask",
+    }
+    missing = required_tensors - set(cache.batch.keys())
+    if missing:
+        raise ValueError(f"teacher cache missing tensors: {sorted(missing)}")
+    expected_prefix = rollout.batch["responses"].shape
+    indices = cache.batch["opd_topk_indices"]
+    log_probs = cache.batch["opd_teacher_topk_log_probs"]
+    if indices.shape != log_probs.shape or indices.shape != (*expected_prefix, top_k):
+        raise ValueError("teacher cache shape/top_k mismatch")
+    if cache.batch["opd_retained_mass"].shape != expected_prefix:
+        raise ValueError("teacher retained-mass shape mismatch")
+    if cache.batch["opd_valid_token_mask"].shape != expected_prefix:
+        raise ValueError("teacher valid-token mask shape mismatch")
+    if any(value.requires_grad for value in cache.batch.values()):
+        raise ValueError("teacher cache must be detached")
+    if not torch.isfinite(log_probs).all() or not torch.isfinite(
+        cache.batch["opd_retained_mass"]
+    ).all():
+        raise ValueError("teacher cache must be finite")
+    valid = cache.batch["opd_valid_token_mask"].bool()
+    if valid.any():
+        normalization = log_probs.float().logsumexp(dim=-1)[valid]
+        if not torch.allclose(normalization, torch.zeros_like(normalization), atol=2e-2):
+            raise ValueError("teacher top-k probabilities are not normalized")
+    for key in ("trajectory_uid", "policy_version", "transition_index"):
+        if key not in cache.non_tensor_batch:
+            raise ValueError(f"teacher cache missing {key}")
+        if not np.array_equal(
+            cache.non_tensor_batch[key], rollout.non_tensor_batch[key]
+        ):
+            raise ValueError(f"teacher cache {key} mismatch")
+
+
+class SkillOPDManager:
+    def __init__(
+        self,
+        tokenizer,
+        processor,
+        *,
+        max_key_transitions: int = 3,
+        max_output_tokens: int = 256,
+        max_context_tokens: int = 32768,
+    ):
+        self.tokenizer = tokenizer
+        self.processor = processor
+        self.max_key_transitions = max_key_transitions
+        self.max_output_tokens = max_output_tokens
+        self.max_context_tokens = max_context_tokens
+
+    @staticmethod
+    def _visual_token_count(observed_video) -> int:
+        if not isinstance(observed_video, dict) or not observed_video.get("video"):
+            return 0
+        video = observed_video["video"][0]
+        time, _, height, width = video.shape
+        return int((time + 1) // 2 * (height // 28) * (width // 28))
+
+    def _build_reflection_batch(self, trajectories):
+        if self.processor is None:
+            raise ValueError("a multimodal processor is required for reflection generation")
+        from recurrent.reflection import build_reflection_prompt
+        from recurrent.utils import (
+            create_attention_mask,
+            create_position_ids_vl,
+            pad_tensor_list_to_length,
+        )
+
+        input_rows = []
+        video_inputs = []
+        multi_modal_data = []
+        for trajectory in trajectories:
+            prompt = build_reflection_prompt(
+                trajectory,
+                self.max_key_transitions,
+                tokenizer=self.tokenizer,
+                visual_token_count=self._visual_token_count(trajectory.observed_video),
+                max_output_tokens=self.max_output_tokens,
+                max_context_tokens=self.max_context_tokens,
+            )
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "video"},
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ]
+            rendered = self.processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            processed = self.processor(
+                text=[rendered],
+                videos=trajectory.observed_video["video"],
+                return_tensors="pt",
+            )
+            if processed["input_ids"].shape[-1] + self.max_output_tokens > self.max_context_tokens:
+                raise ValueError("processed reflection input exceeds shared context limit")
+            input_rows.append(processed["input_ids"][0])
+            video_inputs.append(
+                {
+                    "video_grid_thw": processed["video_grid_thw"],
+                    "second_per_grid_ts": processed.get("second_per_grid_ts", [1.0]),
+                }
+            )
+            multi_modal_data.append(trajectory.observed_video)
+
+        input_ids = pad_tensor_list_to_length(
+            input_rows,
+            pad_token_id=self.tokenizer.pad_token_id,
+            max_length=max(len(row) for row in input_rows),
+            left_pad=True,
+        )
+        attention_mask = create_attention_mask(input_ids, self.tokenizer.pad_token_id)
+        position_ids = create_position_ids_vl(
+            attention_mask, self.processor, video_inputs, input_ids
+        )
+        return DataProto.from_dict(
+            tensors={
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "position_ids": position_ids,
+            },
+            non_tensors={
+                "uid": np.asarray([item.trajectory_uid for item in trajectories], dtype=object),
+                "trajectory_uid": np.asarray(
+                    [item.trajectory_uid for item in trajectories], dtype=object
+                ),
+                "multi_modal_data": np.asarray(multi_modal_data, dtype=object),
+            },
+            meta_info={
+                "do_sample": False,
+                "pad_to": self.max_output_tokens,
+                "generation_kwargs": {
+                    "max_tokens": self.max_output_tokens,
+                    "n": 1,
+                    "temperature": 0,
+                    "top_p": 1.0,
+                },
+            },
+        )
+
+    def generate_reflections(self, trajectories, actor_rollout_wg):
+        from recurrent.reflection import parse_and_validate_reflection
+
+        if not trajectories:
+            return []
+        batch = self._build_reflection_batch(trajectories)
+        output = actor_rollout_wg.generate_sequences(batch)
+        if len(output) != len(trajectories):
+            raise ValueError("reflection output count does not match trajectory count")
+        reflections = []
+        for row, trajectory in enumerate(trajectories):
+            tokens = output.batch["responses"][row].detach().cpu().tolist()
+            tokens = [
+                token
+                for token in tokens
+                if token not in {self.tokenizer.pad_token_id, self.tokenizer.eos_token_id}
+            ]
+            text = self.tokenizer.decode(tokens, skip_special_tokens=True)
+            reflections.append(
+                parse_and_validate_reflection(
+                    text,
+                    trajectory,
+                    policy_version=trajectory.policy_version,
+                    max_key_transitions=self.max_key_transitions,
+                )
+            )
+        return reflections

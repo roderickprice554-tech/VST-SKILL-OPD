@@ -713,6 +713,37 @@ class ActorRolloutRefWorker(Worker):
         return output.to("cpu")
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
+    def compute_opd_teacher_cache(self, data: DataProto):
+        """Cache current-Actor teacher top-k before any optimizer update."""
+        assert self._is_actor
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.actor_module_fsdp)
+
+        self._process_multi_modal_inputs(data)
+        data = data.to(torch.cuda.current_device())
+        top_k = int(data.meta_info["skill_opd_top_k"])
+        temperature = float(data.meta_info["skill_opd_teacher_temperature"])
+        with self.ulysses_sharding_manager:
+            sharded_data = self.ulysses_sharding_manager.preprocess_data(data)
+            cache_tensors = self.actor.compute_opd_teacher_cache(
+                sharded_data, top_k=top_k, temperature=temperature
+            )
+            output = DataProto.from_dict(
+                tensors=cache_tensors,
+                non_tensors={
+                    key: sharded_data.non_tensor_batch[key]
+                    for key in ("trajectory_uid", "policy_version", "transition_index")
+                },
+            )
+            output = self.ulysses_sharding_manager.postprocess_data(output)
+
+        if self.world_size > 1:
+            self.actor.actor_module._handle.reshard(True)
+        if self._is_offload_param and data.meta_info.get("is_final_iter", True):
+            offload_fsdp_model_to_cpu(self.actor_module_fsdp)
+        return output.to("cpu")
+
+    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def compute_ref_log_prob(self, data: DataProto):
         assert self._is_ref
 

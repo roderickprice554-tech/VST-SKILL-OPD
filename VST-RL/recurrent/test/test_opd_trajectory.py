@@ -330,6 +330,17 @@ def test_manager_requires_integer_policy_version():
         LLMGenerationManager._annotate_turn_output(output, policy_version=None)
 
 
+def test_manager_retains_row_aligned_video_inputs_for_reflection_and_teacher():
+    output = _synthetic_recurrent_output()[:2]
+    videos = np.array([{"video": "a"}, {"video": "b"}], dtype=object)
+    video_inputs = [{"video_grid_thw": "grid-a"}, {"video_grid_thw": "grid-b"}]
+
+    LLMGenerationManager._attach_turn_inputs(output, videos, video_inputs)
+
+    assert output.non_tensor_batch["multi_modal_data"].tolist() == videos.tolist()
+    assert output.non_tensor_batch["multi_modal_inputs"].tolist() == video_inputs
+
+
 def test_manager_preserves_legacy_agents_without_transition_metadata():
     output = DataProto.from_dict(
         tensors={
