@@ -1,0 +1,25 @@
+{
+  "source_commit": "26f31d36eb8bcc0b480b43eaaed1277b33a10488",
+  "python": "/home/bujunru/.conda/envs/vision-se/bin/python",
+  "assets_copied": false,
+  "models": [
+    {
+      "path": "/home/bujunru/vlm-repro/models/Qwen2.5-VL-3B-Instruct",
+      "access": "read-only",
+      "manifest": "config.json",
+      "manifest_sha256": "7ed3eed5be6924cc800e8a5e53fc405c1aab1aaf36bad65c33403b36c56827f5"
+    }
+  ],
+  "datasets": [
+    {
+      "path": "/home/bujunru/vlm-repro/VST-full-reproduction/data/VST-Training-Data-official-5647583491c2/vst_rl_data/train.parquet",
+      "access": "read-only",
+      "manifest": "train.parquet",
+      "manifest_sha256": "1ce283a2eef87e324ddb20f3f4775b5f06f5056b461d16bd4b4a71f32fb4f07a"
+    }
+  ],
+  "tracked_file_sha256": {
+    "VST-RL/run.sh": "554759669e7d0e282ea607862db254bb1a51cdfeaf5313b6478af2d687e649d8",
+    "VST-RL/requirements.txt": "529e571ffeae13ffe8f2bc53b993d6c3c94695fcd0218fe6ca7323a848875029"
+  }
+}
