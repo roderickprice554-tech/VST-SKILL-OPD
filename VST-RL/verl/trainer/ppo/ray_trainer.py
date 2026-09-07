@@ -1249,6 +1249,52 @@ class RayPPOTrainer:
                                 reward_tensor, batch, final_mask, sample_index
                             )
                             batch.batch['trajectory_reward'] = trajectory_reward
+                            skill_opd_config = self.config.get("skill_opd", {})
+                            if skill_opd_config.get("enable", False):
+                                from recurrent.skill_opd import assemble_reflection_trajectories
+
+                                final_rows = torch.nonzero(final_mask, as_tuple=False).squeeze(-1).tolist()
+                                rewards_by_trajectory = {
+                                    str(batch.non_tensor_batch["trajectory_uid"][row]): float(
+                                        reward_tensor[reward_index].sum().item()
+                                    )
+                                    for reward_index, row in enumerate(final_rows)
+                                }
+                                query_tokens_by_sample = {
+                                    index: list(tokens)
+                                    for index, tokens in enumerate(
+                                        gen_batch.non_tensor_batch["prompt_ids"]
+                                    )
+                                }
+                                query_text_by_sample = {
+                                    index: self.tokenizer.decode(tokens, skip_special_tokens=True)
+                                    for index, tokens in query_tokens_by_sample.items()
+                                }
+                                prediction_text_by_final_row = {
+                                    row: self.tokenizer.decode(
+                                        batch.batch["responses"][row][
+                                            batch.batch["response_mask"][row].bool()
+                                        ],
+                                        skip_special_tokens=True,
+                                    )
+                                    for row in final_rows
+                                }
+                                observed_video_by_sample = {
+                                    index: video
+                                    for index, video in enumerate(
+                                        gen_batch.non_tensor_batch["multi_modal_data"]
+                                    )
+                                }
+                                reflection_trajectories = assemble_reflection_trajectories(
+                                    output=batch,
+                                    final_mask=final_mask,
+                                    sample_index=sample_index,
+                                    rewards_by_trajectory=rewards_by_trajectory,
+                                    query_tokens_by_sample=query_tokens_by_sample,
+                                    query_text_by_sample=query_text_by_sample,
+                                    prediction_text_by_final_row=prediction_text_by_final_row,
+                                    observed_video_by_sample=observed_video_by_sample,
+                                )
                             # pad for log_prob
                             # split_mini_batch_scale = 8 # magic number
                             # batch.meta_info["num_repeat"] = self.config.actor_rollout_ref.rollout.n 
