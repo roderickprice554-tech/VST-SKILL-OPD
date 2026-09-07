@@ -37,6 +37,15 @@ def test_provenance_manifest():
     }
     assert manifest["models"]
     assert manifest["datasets"]
+    assert manifest["runtime"] == {
+        "python_version": "3.12.13",
+        "torch_version": "2.8.0+cu128",
+        "cuda_runtime": "12.8",
+        "gpu_models": ["NVIDIA A100-PCIE-40GB", "NVIDIA A100-PCIE-40GB"],
+    }
+    assert manifest["worktree"]["path"] == "/home/bujunru/vlm-repro/VST-skill-opd"
+    assert manifest["worktree"]["branch"] == "codex/vst-skill-opd"
+    assert (REPO_ROOT / "docs" / "smoke" / "opd-baseline.md").is_file()
 
     for entry in manifest["models"] + manifest["datasets"]:
         assert Path(entry["path"]).is_absolute()

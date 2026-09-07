@@ -2,6 +2,20 @@
   "source_commit": "26f31d36eb8bcc0b480b43eaaed1277b33a10488",
   "python": "/home/bujunru/.conda/envs/vision-se/bin/python",
   "assets_copied": false,
+  "worktree": {
+    "path": "/home/bujunru/vlm-repro/VST-skill-opd",
+    "branch": "codex/vst-skill-opd",
+    "shared_repository": "/home/bujunru/vlm-repro/VST/.git"
+  },
+  "runtime": {
+    "python_version": "3.12.13",
+    "torch_version": "2.8.0+cu128",
+    "cuda_runtime": "12.8",
+    "gpu_models": [
+      "NVIDIA A100-PCIE-40GB",
+      "NVIDIA A100-PCIE-40GB"
+    ]
+  },
   "environment": {
     "path": "/home/bujunru/.conda/envs/vision-se",
     "manifest": "VST-RL/requirements.txt",
