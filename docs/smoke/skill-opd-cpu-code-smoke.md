@@ -64,7 +64,7 @@ The JSON report SHA-256 is
 
 - Python: 3.12.13
 - PyTorch: 2.8.0+cu128, executed with CUDA hidden
-- Full CPU pytest result: 140 passed
+- Full pytest with CUDA hidden: 138 passed, 2 CUDA-only tests skipped
 - Python compile and both Bash syntax checks passed
 - Model, dataset, video, and checkpoint assets remain external absolute paths;
   none are copied into this worktree
