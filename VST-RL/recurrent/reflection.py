@@ -136,7 +136,7 @@ Do not copy the question, options, answer indicators, or question-specific numbe
 Question/options:
 {trajectory.query_text}
 Prediction: {trajectory.prediction_text}
-Reward: {trajectory.reward}
+Prediction correct: {str(trajectory.is_correct).lower()}
 
 For apply_opd=true use exactly: apply_opd, episode_skill, key_transitions.
 Each key transition uses exactly: transition_index, kind, memory_attribute, step_skill.

@@ -30,7 +30,7 @@ def _trajectory():
         ),
         prediction_tokens=(3,),
         prediction_text="B",
-        reward=-1.0,
+        is_correct=False,
         observed_video="video-ref",
     )
 
@@ -133,7 +133,8 @@ def test_reflection_prompt_contains_evidence_but_no_ground_truth():
     assert "Y_0" in prompt
     assert _trajectory().query_text in prompt
     assert "Prediction: B" in prompt
-    assert "Reward: -1.0" in prompt
+    assert "Prediction correct: false" in prompt
+    assert "Reward:" not in prompt
     assert "ground_truth" not in prompt.casefold()
     assert "correct_answer" not in prompt.casefold()
 

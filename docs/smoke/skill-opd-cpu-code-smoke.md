@@ -1,18 +1,23 @@
-# Skill OPD CPU code smoke
+# Reflection SFT and global-episode Skill OPD CPU smoke
 
-Recorded on 2026-09-08 after the user explicitly changed the current acceptance
-gate from a real GPU/model smoke to a CPU code smoke.
+Recorded on 2026-09-08 after the acceptance gate was explicitly limited to CPU
+code smoke.
 
 ## Scope
 
-- No GPU was used (`CUDA_VISIBLE_DEVICES=""`).
-- The reflection is a schema-valid fixture and is reported as
-  `reflection_source=fixture`; it is not presented as Actor-generated evidence.
-- The smoke exercises the formal trajectory assembler, reflection validator,
-  OPD annotation builder, teacher top-100 cache, localized OPD loss, combined
-  VST-RL + LOPD loss, backward pass, and one CPU SGD update.
-- This verifies the code path and invariants. It does not establish real-model
-  JSON reliability, BF16/GPU stability, or production-scale resource usage.
+- `CUDA_VISIBLE_DEVICES` was empty and the report records `device=cpu` and
+  `gpu_used=false`.
+- The external-teacher response is a strict fixture. The report records
+  `teacher_source=fixture` and `external_api_called=false`.
+- The smoke converts the raw final reward to `is_correct`, builds the same
+  answer-free Analyzer request used online, creates the existing VST-SFT
+  conversation shape, and performs a real toy causal-LM backward/update on six
+  assistant reflection tokens.
+- It then freezes a copy of the current toy Actor, creates skill-conditioned
+  top-100 teacher distributions, evaluates the trainable Actor on original
+  inputs, combines VST-RL and OPD losses, and performs one optimizer update.
+- This does not claim an external API call, a real Qwen Reflection-SFT
+  checkpoint, Actor-generated reflection reliability, or GPU RL execution.
 
 ## Commands
 
@@ -21,11 +26,11 @@ From `/home/bujunru/vlm-repro/VST-skill-opd/VST-RL`:
 ```bash
 CUDA_VISIBLE_DEVICES="" /home/bujunru/.conda/envs/vision-se/bin/python \
   scripts/run_skill_opd_code_smoke.py \
-  /home/bujunru/vlm-repro/skill-opd-smoke/cpu-code-smoke.json
+  /home/bujunru/vlm-repro/skill-opd-smoke/reflection-sft-global-episode-opd-cpu.json
 
 CUDA_VISIBLE_DEVICES="" /home/bujunru/.conda/envs/vision-se/bin/python \
   scripts/audit_skill_opd_smoke.py --cpu-code \
-  /home/bujunru/vlm-repro/skill-opd-smoke/cpu-code-smoke.json
+  /home/bujunru/vlm-repro/skill-opd-smoke/reflection-sft-global-episode-opd-cpu.json
 ```
 
 The audit printed `Skill OPD smoke audit passed`.
@@ -34,34 +39,32 @@ The audit printed `Skill OPD smoke audit passed`.
 
 | Metric | Value |
 | --- | ---: |
-| Memory transitions | 2 |
-| Final turns | 1 |
-| Trajectories | 1 |
-| Reward mapped | true |
-| Reflection valid/applied | 1 / 1 |
-| Key transitions | 1 |
-| Query leakage count | 0 |
-| Teacher top-k | 100 |
-| Valid LOPD tokens | 2 |
-| Final-answer LOPD tokens | 0 |
-| Teacher detached | true |
-| Teacher retained mass | 0.9624049663543701 |
-| Teacher cache bytes | 7230 |
-| VST-RL loss | 1.0238683223724365 |
-| LOPD loss | 0.791822075843811 |
-| Total loss | 1.031786561012268 |
-| Optimizer completed | true |
-| Maximum parameter change | 0.00042128562927246094 |
-| Disabled path equivalent | true |
+| Teacher source / external API | fixture / false |
+| SFT assistant target tokens | 6 |
+| Toy SFT loss | 5.294656753540039 |
+| Toy SFT maximum parameter change | 0.02961796522140503 |
+| Memory transitions / final turns | 2 / 1 |
+| Episode-supervised memory rows | 2 |
+| Key memory rows | 1 |
+| Non-key episode-only rows | 1 |
+| Valid OPD tokens / final OPD tokens | 3 / 0 |
+| Teacher top-k / detached | 100 / true |
+| Teacher retained mass | 0.9191030859947205 |
+| VST-RL loss | 0.3437940180301666 |
+| OPD loss | 0.034291822463274 |
+| Weighted OPD loss (`lambda=0.01`) | 0.00034291822463274003 |
+| Total loss | 0.34413692355155945 |
+| Actor maximum parameter change | 0.0008015930652618408 |
+| Disabled path returns original loss object | true |
 
-## Supporting checks
+The JSON report SHA-256 is
+`d6b9ba9ef2a868922594cb38ab83f55953d4b5d7bf7f1a15ebece369990a5b33`.
 
-- Related CPU tests: `95 passed, 2 skipped` (the skipped cases require CUDA).
-- Smoke audit tests alone: `31 passed`.
-- Python compile and shell syntax checks passed.
-- Hydra smoke configuration composed successfully with the existing absolute,
-  read-only model and dataset paths and `trainer.total_training_steps=1`.
-- The raw synthetic report is stored outside Git at
-  `/home/bujunru/vlm-repro/skill-opd-smoke/cpu-code-smoke.json`.
+## Environment and supporting checks
 
-GPU peak memory is not applicable to this CPU-only acceptance run.
+- Python: 3.12.13
+- PyTorch: 2.8.0+cu128, executed with CUDA hidden
+- Full CPU pytest result: 140 passed
+- Python compile and both Bash syntax checks passed
+- Model, dataset, video, and checkpoint assets remain external absolute paths;
+  none are copied into this worktree

@@ -645,7 +645,7 @@ class DataParallelPPOActor(BasePPOActor):
                 "opd_topk_indices",
                 "opd_teacher_topk_log_probs",
                 "opd_memory_mask",
-                "opd_key_mask",
+                "opd_episode_mask",
                 "opd_reflection_mask",
                 "opd_metadata_mask",
             ])
@@ -830,13 +830,13 @@ class DataParallelPPOActor(BasePPOActor):
                     if skill_opd_enabled:
                         from verl.trainer.ppo.skill_opd_loss import (
                             combine_vst_rl_and_opd_loss,
-                            localized_topk_opd_loss,
+                            skill_conditioned_topk_opd_loss,
                         )
 
                         selected_student_logits = self._forward_opd_student_selected(
                             data, data["opd_topk_indices"]
                         )
-                        lopd_loss, lopd_metrics = localized_topk_opd_loss(
+                        lopd_loss, lopd_metrics = skill_conditioned_topk_opd_loss(
                             selected_student_logits,
                             torch.arange(
                                 selected_student_logits.shape[-1],
@@ -845,7 +845,7 @@ class DataParallelPPOActor(BasePPOActor):
                             data["opd_teacher_topk_log_probs"],
                             response_mask,
                             data["opd_memory_mask"],
-                            data["opd_key_mask"],
+                            data["opd_episode_mask"],
                             data["opd_reflection_mask"],
                             data["opd_metadata_mask"],
                         )

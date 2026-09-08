@@ -38,13 +38,13 @@ def build_teacher_topk(
     return top_indices.detach(), top_log_probs.detach(), retained_mass.detach()
 
 
-def localized_topk_opd_loss(
+def skill_conditioned_topk_opd_loss(
     student_logits: torch.Tensor,
     teacher_topk_indices: torch.Tensor,
     teacher_topk_log_probs: torch.Tensor,
     response_mask: torch.Tensor,
     memory_mask: torch.Tensor,
-    key_mask: torch.Tensor,
+    episode_mask: torch.Tensor,
     reflection_mask: torch.Tensor,
     metadata_mask: torch.Tensor,
 ) -> tuple[torch.Tensor, dict[str, float | int]]:
@@ -55,7 +55,7 @@ def localized_topk_opd_loss(
         raise ValueError("student and teacher cache leading dimensions must match")
 
     expected_mask_shape = student_logits.shape[:-1]
-    masks = (response_mask, memory_mask, key_mask, reflection_mask, metadata_mask)
+    masks = (response_mask, memory_mask, episode_mask, reflection_mask, metadata_mask)
     if any(mask.shape != expected_mask_shape for mask in masks):
         raise ValueError("all OPD masks must match student response positions")
 

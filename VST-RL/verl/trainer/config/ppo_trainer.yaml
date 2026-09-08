@@ -278,7 +278,7 @@ recurrent:
 skill_opd:
   enable: false
   smoke_metrics_path: null
-  mode: localized
+  mode: global_episode
   top_k: 100
   teacher_temperature: 1.0
   lambda_opd: 0.01

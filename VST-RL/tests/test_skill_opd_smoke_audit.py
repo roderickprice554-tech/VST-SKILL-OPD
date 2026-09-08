@@ -18,10 +18,18 @@ def _valid_report():
     return {
         "smoke_type": "cpu_code",
         "reflection_source": "fixture",
+        "teacher_source": "fixture",
+        "external_api_called": False,
+        "device": "cpu",
+        "gpu_used": False,
         "memory_transition_count": 2,
+        "episode_memory_row_count": 2,
+        "key_memory_row_count": 1,
+        "non_key_episode_row_count": 1,
         "final_turn_count": 1,
         "trajectory_count": 1,
         "reward_mapped": True,
+        "correctness_mapped": True,
         "reflection_valid": 1,
         "reflection_applied": 1,
         "key_transition_count": 1,
@@ -29,13 +37,19 @@ def _valid_report():
         "top_k": 100,
         "valid_token_count": 5,
         "final_token_count": 0,
+        "final_opd_token_count": 0,
         "teacher_detached": True,
+        "sft_target_token_count": 6,
+        "sft_loss": 1.2,
+        "sft_trainable_param_max_change": 1e-4,
         "rl_loss": 0.3,
         "lopd_loss": 0.2,
+        "weighted_lopd_loss": 0.002,
         "total_loss": 0.302,
         "cache_bytes": 4096,
         "optimizer_completed": True,
         "trainable_param_max_change": 1e-6,
+        "actor_trainable_param_max_change": 1e-6,
         "disabled_path_equivalent": True,
         "retained_mass": 0.9,
     }
@@ -54,6 +68,10 @@ def test_valid_cpu_code_smoke_report_passes():
     [
         ("smoke_type", "gpu"),
         ("reflection_source", "actor"),
+        ("teacher_source", "external"),
+        ("external_api_called", True),
+        ("device", "cuda"),
+        ("gpu_used", True),
         ("disabled_path_equivalent", False),
         ("retained_mass", float("nan")),
         ("retained_mass", 0.0),
@@ -74,6 +92,7 @@ def test_cpu_code_smoke_rejects_mislabelled_or_invalid_evidence(field, value):
         ("memory_transition_count", 1),
         ("final_turn_count", 0),
         ("reward_mapped", False),
+        ("correctness_mapped", False),
         ("reflection_valid", 0),
         ("reflection_applied", 0),
         ("key_transition_count", 0),
@@ -81,9 +100,11 @@ def test_cpu_code_smoke_rejects_mislabelled_or_invalid_evidence(field, value):
         ("top_k", 99),
         ("valid_token_count", 0),
         ("final_token_count", 1),
+        ("final_opd_token_count", 1),
         ("teacher_detached", False),
         ("rl_loss", float("nan")),
         ("lopd_loss", float("inf")),
+        ("weighted_lopd_loss", float("nan")),
         ("total_loss", float("nan")),
         ("cache_bytes", 0),
         ("optimizer_completed", False),
@@ -96,6 +117,40 @@ def test_each_failed_acceptance_gate_is_rejected(field, value):
 
     with pytest.raises(ValueError):
         MODULE.audit_enabled_smoke(report)
+
+
+def test_enabled_smoke_rejects_inconsistent_joint_loss():
+    report = _valid_report()
+    report["total_loss"] = report["rl_loss"] + report["weighted_lopd_loss"] + 0.1
+
+    with pytest.raises(ValueError, match="composition"):
+        MODULE.audit_enabled_smoke(report)
+
+
+def test_enabled_training_report_does_not_claim_offline_sft_evidence():
+    report = _valid_report()
+    report.pop("sft_target_token_count")
+    report.pop("sft_loss")
+    report.pop("sft_trainable_param_max_change")
+
+    MODULE.audit_enabled_smoke(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sft_target_token_count", 0),
+        ("sft_loss", float("nan")),
+        ("sft_trainable_param_max_change", 0.0),
+        ("actor_trainable_param_max_change", 0.0),
+    ],
+)
+def test_cpu_code_smoke_rejects_missing_sft_or_actor_update(field, value):
+    report = _valid_report()
+    report[field] = value
+
+    with pytest.raises(ValueError):
+        MODULE.audit_cpu_code_smoke(report)
 
 
 def test_missing_field_is_rejected():
@@ -134,6 +189,7 @@ def test_smoke_runner_uses_absolute_read_only_assets_and_one_update():
     assert "/home/bujunru/vlm-repro/VST-full-reproduction/data/" in runner
     assert "trainer.total_training_steps=1" in runner
     assert "skill_opd.top_k=100" in runner
+    assert "skill_opd.mode=global_episode" in runner
     assert "skill_opd.lambda_opd=0.01" in runner
     assert "SKILL_OPD_ENABLE" in runner
     assert "SMOKE_CONFIG_ONLY" in runner
@@ -160,6 +216,15 @@ def test_cpu_code_smoke_runs_formal_pipeline_and_passes_audit(tmp_path):
     MODULE.audit_cpu_code_smoke(report)
     assert report["smoke_type"] == "cpu_code"
     assert report["reflection_source"] == "fixture"
+    assert report["teacher_source"] == "fixture"
+    assert report["external_api_called"] is False
+    assert report["episode_memory_row_count"] == 2
+    assert report["key_memory_row_count"] == 1
+    assert report["non_key_episode_row_count"] == 1
+    assert report["final_opd_token_count"] == 0
+    assert report["sft_target_token_count"] > 0
+    assert report["sft_trainable_param_max_change"] > 0
+    assert report["actor_trainable_param_max_change"] > 0
     assert report["disabled_path_equivalent"] is True
 
 

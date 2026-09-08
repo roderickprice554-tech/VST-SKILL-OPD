@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import math
 from typing import Any, Mapping
 
 import numpy as np
@@ -31,11 +32,13 @@ class ReflectionTrajectory:
     query_text: str
     prediction_tokens: tuple[int, ...]
     prediction_text: str
-    reward: float
+    is_correct: bool
     observed_video: Any
 
     def to_analyzer_input(self) -> dict[str, Any]:
         """Construct the analyzer payload from an explicit non-label allowlist."""
+        if type(self.is_correct) is not bool:
+            raise TypeError("Analyzer requires boolean correctness")
         return {
             "trajectory_uid": self.trajectory_uid,
             "policy_version": self.policy_version,
@@ -52,8 +55,15 @@ class ReflectionTrajectory:
             ],
             "query": self.query_text,
             "prediction": self.prediction_text,
-            "reward": self.reward,
+            "is_correct": self.is_correct,
         }
+
+
+def reward_to_is_correct(reward: float) -> bool:
+    value = float(reward)
+    if not math.isfinite(value):
+        raise ValueError("final reward must be finite before correctness conversion")
+    return value > 0.0
 
 
 def _required_lookup(mapping: Mapping, key, name: str):
@@ -75,13 +85,13 @@ def assemble_reflection_trajectories(
     output: DataProto,
     final_mask: torch.Tensor,
     sample_index: torch.Tensor,
-    rewards_by_trajectory: Mapping[str, float],
+    correctness_by_trajectory: Mapping[str, bool],
     query_tokens_by_sample: Mapping[int, list[int]],
     query_text_by_sample: Mapping[int, str],
     prediction_text_by_final_row: Mapping[int, str],
     observed_video_by_sample: Mapping[int, Any],
 ) -> list[ReflectionTrajectory]:
-    """Assemble validated, reward-bearing trajectories without copying label fields."""
+    """Assemble validated trajectories with only boolean outcome information."""
     rows_by_trajectory = aggregate_trajectories(output, final_mask, sample_index)
     row_samples = sample_index.detach().cpu().tolist()
     response_masks = output.batch["response_mask"].detach().cpu()
@@ -92,8 +102,11 @@ def assemble_reflection_trajectories(
         memory_rows = rows[:-1]
         final_row = rows[-1]
         sample = int(row_samples[final_row])
-        if trajectory_uid not in rewards_by_trajectory:
-            raise ValueError(f"missing reward for trajectory_uid {trajectory_uid!r}")
+        if trajectory_uid not in correctness_by_trajectory:
+            raise ValueError(f"missing correctness for trajectory_uid {trajectory_uid!r}")
+        is_correct = correctness_by_trajectory[trajectory_uid]
+        if type(is_correct) is not bool:
+            raise TypeError("trajectory assembly requires boolean correctness")
 
         query_tokens = _required_lookup(query_tokens_by_sample, sample, "query tokens")
         query_text = _required_lookup(query_text_by_sample, sample, "query text")
@@ -138,7 +151,7 @@ def assemble_reflection_trajectories(
                 query_text=str(query_text),
                 prediction_tokens=_token_tuple(prediction_tokens),
                 prediction_text=str(prediction_text),
-                reward=float(rewards_by_trajectory[trajectory_uid]),
+                is_correct=is_correct,
                 observed_video=observed_video,
             )
         )
@@ -152,6 +165,7 @@ def build_opd_annotations(output, trajectories, reflections):
         raise ValueError("trajectory and reflection counts must match")
     response_shape = output.batch["response_mask"].shape
     device = output.batch["response_mask"].device
+    episode_mask = torch.zeros(response_shape, dtype=torch.bool, device=device)
     key_mask = torch.zeros(response_shape, dtype=torch.bool, device=device)
     reflection_mask = torch.zeros_like(key_mask)
     metadata_mask = torch.zeros_like(key_mask)
@@ -177,23 +191,26 @@ def build_opd_annotations(output, trajectories, reflections):
             transition.transition_index: transition.row_index
             for transition in trajectory.transitions
         }
-        for key_transition in reflection.key_transitions:
-            row = rows_by_transition[key_transition.transition_index]
-            key_mask[row] = output.batch["response_mask"][row].bool()
+        for row in trajectory.transition_rows:
+            episode_mask[row] = output.batch["response_mask"][row].bool()
             reflection_mask[row] = True
             metadata_mask[row] = True
             episode_skills[row] = reflection.episode_skill
+        for key_transition in reflection.key_transitions:
+            row = rows_by_transition[key_transition.transition_index]
+            key_mask[row] = output.batch["response_mask"][row].bool()
             step_skills[row] = key_transition.step_skill
 
     valid_token_mask = (
         output.batch["response_mask"].bool()
         & memory_mask
-        & key_mask
+        & episode_mask
         & reflection_mask
         & metadata_mask
     )
     return {
         "opd_memory_mask": memory_mask,
+        "opd_episode_mask": episode_mask,
         "opd_key_mask": key_mask,
         "opd_reflection_mask": reflection_mask,
         "opd_metadata_mask": metadata_mask,

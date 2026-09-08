@@ -39,4 +39,19 @@ def test_actor_only_requires_cache_and_second_forward_when_opd_is_enabled():
     assert 'skill_opd_enabled = data.meta_info.get("skill_opd", {}).get("enable", False)' in actor_source
     assert 'if skill_opd_enabled:' in actor_source
     assert '"opd_topk_indices"' in actor_source
-    assert "localized_topk_opd_loss(" in actor_source
+    assert '"opd_episode_mask"' in actor_source
+    assert "skill_conditioned_topk_opd_loss(" in actor_source
+    assert "localized_topk_opd_loss(" not in actor_source
+
+
+def test_trainer_converts_reward_to_correctness_and_builds_episode_only_skills():
+    trainer_source = (
+        REPO_ROOT / "VST-RL" / "verl" / "trainer" / "ppo" / "ray_trainer.py"
+    ).read_text(encoding="utf-8")
+
+    assert "reward_to_is_correct" in trainer_source
+    assert "correctness_by_trajectory=" in trainer_source
+    assert 'text = f"Episode skill: {episode_skill}"' in trainer_source
+    assert 'text += f"\\nStep skill: {step_skill}"' in trainer_source
+    assert 'metrics["skill_opd/non_key_episode_row_count"]' in trainer_source
+    assert 'metrics["skill_opd/final_opd_token_count"]' in trainer_source

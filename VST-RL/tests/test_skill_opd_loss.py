@@ -2,7 +2,11 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from verl.trainer.ppo.skill_opd_loss import build_teacher_topk, localized_topk_opd_loss
+from verl.trainer.ppo.skill_opd_loss import (
+    build_teacher_topk,
+    combine_vst_rl_and_opd_loss,
+    skill_conditioned_topk_opd_loss,
+)
 
 
 def _all_masks(batch, response):
@@ -26,7 +30,7 @@ def test_teacher_cache_is_detached_and_only_student_receives_gradient():
     student = torch.randn(1, 2, 5, requires_grad=True)
     indices, log_probs, _ = build_teacher_topk(teacher, top_k=3, temperature=1.0)
 
-    loss, _ = localized_topk_opd_loss(student, indices, log_probs, *_all_masks(1, 2))
+    loss, _ = skill_conditioned_topk_opd_loss(student, indices, log_probs, *_all_masks(1, 2))
     loss.backward()
 
     assert indices.requires_grad is False
@@ -42,8 +46,8 @@ def test_mask_product_selects_only_tokens_valid_in_every_mask():
     masks = _all_masks(1, 2)
     masks[2][0, 1] = False
 
-    loss, metrics = localized_topk_opd_loss(student, indices, log_probs, *masks)
-    first_only, _ = localized_topk_opd_loss(
+    loss, metrics = skill_conditioned_topk_opd_loss(student, indices, log_probs, *masks)
+    first_only, _ = skill_conditioned_topk_opd_loss(
         student[:, :1], indices[:, :1], log_probs[:, :1], *_all_masks(1, 1)
     )
 
@@ -57,7 +61,7 @@ def test_no_valid_tokens_returns_differentiable_zero():
     masks = _all_masks(1, 2)
     masks[3].zero_()
 
-    loss, metrics = localized_topk_opd_loss(student, indices, log_probs, *masks)
+    loss, metrics = skill_conditioned_topk_opd_loss(student, indices, log_probs, *masks)
     loss.backward()
 
     assert loss.item() == 0.0
@@ -73,7 +77,7 @@ def test_final_answer_tokens_have_zero_opd_mask():
     masks = _all_masks(2, 3)
     masks[1][1].zero_()  # memory_mask: second row is the final answer row
 
-    _, metrics = localized_topk_opd_loss(student, indices, log_probs, *masks)
+    _, metrics = skill_conditioned_topk_opd_loss(student, indices, log_probs, *masks)
 
     assert metrics["opd/valid_token_count"] == 3
 
@@ -84,12 +88,12 @@ def test_top_k_is_exactly_100_when_vocabulary_permits():
     assert indices.shape == log_probs.shape == (2, 3, 100)
 
 
-def test_localized_loss_equals_full_forward_kl_when_k_covers_vocabulary():
+def test_skill_conditioned_loss_equals_full_forward_kl_when_k_covers_vocabulary():
     teacher = torch.randn(2, 3, 7)
     student = torch.randn(2, 3, 7, requires_grad=True)
     indices, teacher_log_probs, _ = build_teacher_topk(teacher, 100, 1.0)
 
-    actual, _ = localized_topk_opd_loss(
+    actual, _ = skill_conditioned_topk_opd_loss(
         student, indices, teacher_log_probs, *_all_masks(2, 3)
     )
     full_teacher_log_probs = F.log_softmax(teacher, dim=-1)
@@ -120,7 +124,17 @@ def test_cuda_loss_is_finite():
     indices, log_probs, _ = build_teacher_topk(teacher, 100, 1.0)
     masks = [mask.cuda() for mask in _all_masks(1, 2)]
 
-    loss, _ = localized_topk_opd_loss(student, indices, log_probs, *masks)
+    loss, _ = skill_conditioned_topk_opd_loss(student, indices, log_probs, *masks)
     loss.backward()
 
     assert torch.isfinite(loss)
+
+
+def test_disabled_joint_loss_returns_original_tensor_object():
+    original = torch.tensor(3.0, requires_grad=True)
+
+    combined = combine_vst_rl_and_opd_loss(
+        original, None, enabled=False, lambda_opd=0.01
+    )
+
+    assert combined is original

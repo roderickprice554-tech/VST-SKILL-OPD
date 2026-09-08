@@ -1251,17 +1251,18 @@ class RayPPOTrainer:
                             batch.batch['trajectory_reward'] = trajectory_reward
                             skill_opd_config = self.config.get("skill_opd", {})
                             if skill_opd_config.get("enable", False):
-                                if skill_opd_config.get("mode", "localized") != "localized":
-                                    raise ValueError("only localized Skill OPD mode is implemented")
+                                if skill_opd_config.get("mode", "global_episode") != "global_episode":
+                                    raise ValueError("only global_episode Skill OPD mode is implemented")
                                 from recurrent.skill_opd import (
                                     SkillOPDManager,
                                     assemble_reflection_trajectories,
                                     build_opd_annotations,
+                                    reward_to_is_correct,
                                 )
 
                                 final_rows = torch.nonzero(final_mask, as_tuple=False).squeeze(-1).tolist()
-                                rewards_by_trajectory = {
-                                    str(batch.non_tensor_batch["trajectory_uid"][row]): float(
+                                correctness_by_trajectory = {
+                                    str(batch.non_tensor_batch["trajectory_uid"][row]): reward_to_is_correct(
                                         reward_tensor[reward_index].sum().item()
                                     )
                                     for reward_index, row in enumerate(final_rows)
@@ -1295,7 +1296,7 @@ class RayPPOTrainer:
                                     output=batch,
                                     final_mask=final_mask,
                                     sample_index=sample_index,
-                                    rewards_by_trajectory=rewards_by_trajectory,
+                                    correctness_by_trajectory=correctness_by_trajectory,
                                     query_tokens_by_sample=query_tokens_by_sample,
                                     query_text_by_sample=query_text_by_sample,
                                     prediction_text_by_final_row=prediction_text_by_final_row,
@@ -1345,6 +1346,7 @@ class RayPPOTrainer:
                                 )
                                 metrics["skill_opd/final_turn_count"] = len(final_rows)
                                 metrics["skill_opd/reward_mapped"] = True
+                                metrics["skill_opd/correctness_mapped"] = True
                                 metrics["skill_opd/query_leakage_count"] = sum(
                                     bool(reflection.rejection_reason)
                                     and "leakage" in reflection.rejection_reason
@@ -1384,11 +1386,11 @@ class RayPPOTrainer:
                                         batch.non_tensor_batch["opd_step_skill"],
                                     )
                                 ):
-                                    if step_skill is not None:
-                                        teacher_skills[row] = (
-                                            f"Episode skill: {episode_skill}\n"
-                                            f"Step skill: {step_skill}"
-                                        )
+                                    if episode_skill is not None:
+                                        text = f"Episode skill: {episode_skill}"
+                                        if step_skill is not None:
+                                            text += f"\nStep skill: {step_skill}"
+                                        teacher_skills[row] = text
                                 teacher_batch = deepcopy(batch)
                                 teacher_input_ids, teacher_attention_mask = augment_teacher_inputs(
                                     teacher_batch.batch["input_ids"],
@@ -1434,12 +1436,30 @@ class RayPPOTrainer:
                                 metrics["skill_opd/valid_token_count"] = int(
                                     valid_teacher_tokens.sum().item()
                                 )
+                                episode_rows = batch.batch["opd_episode_mask"].any(dim=-1)
+                                key_rows = batch.batch["opd_key_mask"].any(dim=-1)
+                                metrics["skill_opd/episode_row_count"] = int(
+                                    episode_rows.sum().item()
+                                )
+                                metrics["skill_opd/key_row_count"] = int(key_rows.sum().item())
+                                metrics["skill_opd/non_key_episode_row_count"] = int(
+                                    (episode_rows & ~key_rows).sum().item()
+                                )
+                                metrics["skill_opd/episode_token_count"] = int(
+                                    batch.batch["opd_episode_mask"].sum().item()
+                                )
+                                metrics["skill_opd/key_token_count"] = int(
+                                    batch.batch["opd_key_mask"].sum().item()
+                                )
                                 metrics["skill_opd/final_token_count"] = int(
                                     (
                                         valid_teacher_tokens
                                         & batch.batch["final_mask"].unsqueeze(-1)
                                     ).sum().item()
                                 )
+                                metrics["skill_opd/final_opd_token_count"] = metrics[
+                                    "skill_opd/final_token_count"
+                                ]
                                 if valid_teacher_tokens.any():
                                     metrics["skill_opd/retained_mass"] = float(
                                         teacher_cache.batch["opd_retained_mass"][
@@ -1621,6 +1641,9 @@ class RayPPOTrainer:
                                 "final_turn_count": metrics["skill_opd/final_turn_count"],
                                 "trajectory_count": metrics["skill_opd/trajectory_count"],
                                 "reward_mapped": metrics["skill_opd/reward_mapped"],
+                                "correctness_mapped": metrics[
+                                    "skill_opd/correctness_mapped"
+                                ],
                                 "reflection_valid": metrics["skill_opd/reflection_valid"],
                                 "reflection_applied": metrics[
                                     "skill_opd/reflection_applied"
@@ -1638,11 +1661,17 @@ class RayPPOTrainer:
                                 "final_token_count": metrics[
                                     "skill_opd/final_token_count"
                                 ],
+                                "final_opd_token_count": metrics[
+                                    "skill_opd/final_opd_token_count"
+                                ],
                                 "teacher_detached": metrics[
                                     "skill_opd/teacher_detached"
                                 ],
                                 "rl_loss": metrics["actor/vst_rl_loss"],
                                 "lopd_loss": metrics["actor/lopd_loss"],
+                                "weighted_lopd_loss": metrics[
+                                    "actor/weighted_lopd_loss"
+                                ],
                                 "total_loss": metrics["actor/total_loss"],
                                 "cache_bytes": metrics["skill_opd/cache_bytes"],
                                 "optimizer_completed": True,
