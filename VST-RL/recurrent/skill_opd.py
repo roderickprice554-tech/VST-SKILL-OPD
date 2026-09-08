@@ -326,6 +326,7 @@ class SkillOPDManager:
         input_rows = []
         video_inputs = []
         multi_modal_data = []
+        context_lengths = []
         for trajectory in trajectories:
             prompt = build_reflection_prompt(
                 trajectory,
@@ -354,6 +355,9 @@ class SkillOPDManager:
             )
             if processed["input_ids"].shape[-1] + self.max_output_tokens > self.max_context_tokens:
                 raise ValueError("processed reflection input exceeds shared context limit")
+            context_lengths.append(
+                int(processed["input_ids"].shape[-1] + self.max_output_tokens)
+            )
             input_rows.append(processed["input_ids"][0])
             video_inputs.append(
                 {
@@ -373,6 +377,7 @@ class SkillOPDManager:
         position_ids = create_position_ids_vl(
             attention_mask, self.processor, video_inputs, input_ids
         )
+        self.last_context_tokens = context_lengths
         return DataProto.from_dict(
             tensors={
                 "input_ids": input_ids,

@@ -1,6 +1,9 @@
 import copy
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -13,6 +16,8 @@ SPEC.loader.exec_module(MODULE)
 
 def _valid_report():
     return {
+        "smoke_type": "cpu_code",
+        "reflection_source": "fixture",
         "memory_transition_count": 2,
         "final_turn_count": 1,
         "trajectory_count": 1,
@@ -31,11 +36,36 @@ def _valid_report():
         "cache_bytes": 4096,
         "optimizer_completed": True,
         "trainable_param_max_change": 1e-6,
+        "disabled_path_equivalent": True,
+        "retained_mass": 0.9,
     }
 
 
 def test_valid_smoke_report_passes():
     MODULE.audit_enabled_smoke(_valid_report())
+
+
+def test_valid_cpu_code_smoke_report_passes():
+    MODULE.audit_cpu_code_smoke(_valid_report())
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("smoke_type", "gpu"),
+        ("reflection_source", "actor"),
+        ("disabled_path_equivalent", False),
+        ("retained_mass", float("nan")),
+        ("retained_mass", 0.0),
+        ("retained_mass", 1.1),
+    ],
+)
+def test_cpu_code_smoke_rejects_mislabelled_or_invalid_evidence(field, value):
+    report = _valid_report()
+    report[field] = value
+
+    with pytest.raises(ValueError):
+        MODULE.audit_cpu_code_smoke(report)
 
 
 @pytest.mark.parametrize(
@@ -108,3 +138,40 @@ def test_smoke_runner_uses_absolute_read_only_assets_and_one_update():
     assert "SKILL_OPD_ENABLE" in runner
     assert "SMOKE_CONFIG_ONLY" in runner
     assert "recurrent.video_memory.config.prompt_type=type2" in runner
+
+
+def test_training_smoke_report_uses_measured_dtype_and_empty_safe_context_metric():
+    trainer = (
+        SCRIPT.parents[1] / "verl" / "trainer" / "ppo" / "ray_trainer.py"
+    ).read_text(encoding="utf-8")
+
+    assert '"teacher_log_probs_dtype": str(' in trainer
+    assert '"teacher_log_probs_dtype": "bfloat16"' not in trainer
+    assert "skill_opd_manager.last_context_tokens, default=0" in trainer
+
+
+def test_cpu_code_smoke_runs_formal_pipeline_and_passes_audit(tmp_path):
+    code_smoke_path = SCRIPT.parent / "run_skill_opd_code_smoke.py"
+    spec = importlib.util.spec_from_file_location("run_skill_opd_code_smoke", code_smoke_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    report = module.run_code_smoke(tmp_path / "code-smoke.json")
+
+    MODULE.audit_cpu_code_smoke(report)
+    assert report["smoke_type"] == "cpu_code"
+    assert report["reflection_source"] == "fixture"
+    assert report["disabled_path_equivalent"] is True
+
+
+def test_cpu_code_smoke_is_directly_executable(tmp_path):
+    code_smoke_path = SCRIPT.parent / "run_skill_opd_code_smoke.py"
+    report_path = tmp_path / "direct-code-smoke.json"
+
+    subprocess.run(
+        [sys.executable, str(code_smoke_path), str(report_path)],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    MODULE.audit_cpu_code_smoke(report)

@@ -144,6 +144,10 @@ kind must be preserve or correct.
 memory_attribute must be one of: entity_identity, state_change, temporal_order, event_existence, count, spatial_relation, visible_text, compression.
 For apply_opd=false set episode_skill=null and key_transitions=[] and include skip_reason.
 skip_reason must be one of: memory_cause_uncertain, answer_only_error, insufficient_evidence, invalid_trajectory.
+Valid apply JSON shape:
+{{"apply_opd":true,"episode_skill":"query-independent general skill","key_transitions":[{{"transition_index":0,"kind":"preserve","memory_attribute":"compression","step_skill":"query-independent transition skill"}}]}}
+Valid skip JSON shape:
+{{"apply_opd":false,"episode_skill":null,"key_transitions":[],"skip_reason":"memory_cause_uncertain"}}
 """
     prompt_tokens = (
         len(tokenizer.encode(prompt, add_special_tokens=False))

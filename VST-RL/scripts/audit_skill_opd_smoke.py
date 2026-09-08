@@ -38,7 +38,7 @@ def audit_enabled_smoke(report: dict) -> None:
     if report["reward_mapped"] is not True:
         raise ValueError("trajectory reward mapping was not verified")
     if report["reflection_valid"] < 1 or report["reflection_applied"] < 1:
-        raise ValueError("Actor must produce a valid applied reflection")
+        raise ValueError("smoke must contain a valid applied reflection")
     if report["key_transition_count"] < 1:
         raise ValueError("reflection must select at least one key transition")
     if report["query_leakage_count"] != 0:
@@ -77,14 +77,41 @@ def audit_disabled_smoke(report: dict) -> None:
         raise ValueError("disabled smoke RL loss is not finite")
 
 
+def audit_cpu_code_smoke(report: dict) -> None:
+    audit_enabled_smoke(report)
+    expected = {
+        "smoke_type",
+        "reflection_source",
+        "disabled_path_equivalent",
+        "retained_mass",
+    }
+    missing = expected - set(report)
+    if missing:
+        raise ValueError(f"missing CPU code smoke fields: {sorted(missing)}")
+    if report["smoke_type"] != "cpu_code":
+        raise ValueError("report is not labelled as a CPU code smoke")
+    if report["reflection_source"] != "fixture":
+        raise ValueError("CPU code smoke reflection source must be fixture")
+    if report["disabled_path_equivalent"] is not True:
+        raise ValueError("disabled path did not return the original RL loss")
+    retained_mass = float(report["retained_mass"])
+    if not math.isfinite(retained_mass) or not 0.0 < retained_mass <= 1.0:
+        raise ValueError("teacher retained mass must be finite and in (0, 1]")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("report", type=Path)
     parser.add_argument("--disabled", action="store_true")
+    parser.add_argument("--cpu-code", action="store_true")
     args = parser.parse_args()
     report = json.loads(args.report.read_text(encoding="utf-8"))
+    if args.disabled and args.cpu_code:
+        parser.error("--disabled and --cpu-code are mutually exclusive")
     if args.disabled:
         audit_disabled_smoke(report)
+    elif args.cpu_code:
+        audit_cpu_code_smoke(report)
     else:
         audit_enabled_smoke(report)
     print("Skill OPD smoke audit passed")

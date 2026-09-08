@@ -1251,6 +1251,8 @@ class RayPPOTrainer:
                             batch.batch['trajectory_reward'] = trajectory_reward
                             skill_opd_config = self.config.get("skill_opd", {})
                             if skill_opd_config.get("enable", False):
+                                if skill_opd_config.get("mode", "localized") != "localized":
+                                    raise ValueError("only localized Skill OPD mode is implemented")
                                 from recurrent.skill_opd import (
                                     SkillOPDManager,
                                     assemble_reflection_trajectories,
@@ -1351,6 +1353,17 @@ class RayPPOTrainer:
                                 metrics["skill_opd/top_k"] = skill_opd_config.get(
                                     "top_k", 100
                                 )
+                                metrics["skill_opd/reflection_context_max_tokens"] = max(
+                                    skill_opd_manager.last_context_tokens, default=0
+                                )
+                                reflection_kind_counts = defaultdict(int)
+                                reflection_attribute_counts = defaultdict(int)
+                                for reflection in reflections:
+                                    for key_transition in reflection.key_transitions:
+                                        reflection_kind_counts[key_transition.kind] += 1
+                                        reflection_attribute_counts[
+                                            key_transition.memory_attribute
+                                        ] += 1
                             # pad for log_prob
                             # split_mini_batch_scale = 8 # magic number
                             # batch.meta_info["num_repeat"] = self.config.actor_rollout_ref.rollout.n 
@@ -1638,6 +1651,25 @@ class RayPPOTrainer:
                                 ],
                                 "retained_mass": metrics.get(
                                     "skill_opd/retained_mass", None
+                                ),
+                                "reflection_context_max_tokens": metrics[
+                                    "skill_opd/reflection_context_max_tokens"
+                                ],
+                                "reflection_kind_counts": dict(reflection_kind_counts),
+                                "reflection_attribute_counts": dict(
+                                    reflection_attribute_counts
+                                ),
+                                "teacher_log_probs_dtype": str(
+                                    teacher_cache.batch[
+                                        "opd_teacher_topk_log_probs"
+                                    ].dtype
+                                ).removeprefix("torch."),
+                                "lambda_opd": self.config.skill_opd.lambda_opd,
+                                "weighted_opd_to_rl_ratio": abs(
+                                    metrics["actor/weighted_lopd_loss"]
+                                ) / max(abs(metrics["actor/vst_rl_loss"]), 1e-12),
+                                "gpu_peak_allocated_gb": metrics.get(
+                                    "perf/max_memory_allocated_gb", None
                                 ),
                                     "policy_version": self.global_steps,
                                 }
