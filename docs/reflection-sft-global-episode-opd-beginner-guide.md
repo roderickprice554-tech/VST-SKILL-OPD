@@ -1,10 +1,9 @@
-# VST-SKILL-OPD 全流程新手指南
+# VST-SKILL-OPD 流程介绍
 
-本文说明当前代码从“视频分段记忆”到“反思 SFT”，再到“在线强化学习 + OPD”的完整流程。阅读本文不要求熟悉 VST、PPO 或知识蒸馏。
 
-> 当前实现目标是验证代码链路，而不是证明训练效果。已经完成 CPU code smoke；尚未运行真实外部大模型、完整 SFT、GPU/Ray/DeepSpeed 全量训练或效果评测。
+> 当前实现目标是跑通代码，已经完成 CPU code smoke；尚未运行真实外部大模型、完整 SFT、GPU/Ray/DeepSpeed 全量训练或效果评测。
 
-## 1. 一句话理解整个系统
+## 1. 简介
 
 系统先让 Actor 学会逐段观看视频并写记忆，最后回答问题；然后用不含正确答案的事后反思数据做一次 SFT，教会 Actor 输出结构化“技能”；进入在线训练后，冻结的当前 Actor 充当 Analyzer，为完整轨迹生成技能，再把技能作为教师侧额外提示，通过 OPD 与原 VST-RL loss 一起更新 Actor。
 
@@ -22,63 +21,37 @@
   -> 原 VST-RL loss + lambda_opd * LOPD 更新 Actor
 ```
 
-这里有两个很容易混淆的结论：
-
 1. **外部大模型只用于离线反思 SFT 数据准备。** 在线 OPD 不调用外部模型，Analyzer 是冻结的当前 Actor。
 2. **OPD 不只训练 Analyzer 选中的关键步。** 所有有效的非最终 memory 行都有 episode skill，因此都进入 OPD；关键步只是再附加一个更具体的 step skill。final turn 永远不进入 OPD。
 
 ## 2. 核心名词
 
 - **trajectory / episode**：一个样本从第一段视频到最终回答的完整过程。
-- **memory turn**：非最终轮。输入是旧记忆、当前视频块和与问题无关的指令，输出是本轮记忆文本 \(Y_t\)。
+- **memory turn**：非最终轮。输入是旧记忆、当前视频块和与问题无关的skill，输出是本轮记忆文本 \(Y_t\)。
 - **final turn**：最终轮。输入是 \(M_{T-1}, C_T, Q\)，输出最终答案，只参与环境 reward 和原 VST-RL。
 - **Actor**：被训练的模型，既生成记忆和答案，也在冻结状态下充当在线 Analyzer。
-- **Analyzer**：读取完整轨迹并输出结构化反思技能的角色，不是单独的外部服务。
+- **Analyzer**：读取完整轨迹并输出结构化反思技能的角色，和actor同源。
 - **episode skill**：适用于整条轨迹所有 memory turn 的全局技能。
 - **step skill**：只附加到 Analyzer 判定为关键的某个 memory turn。
-- **OPD**：让原始输入上的学生分布模仿“加入技能提示后”的冻结教师分布。
 
 ## 3. 阶段总览
 
 | 阶段 | 目的 | 主要输入 | 主要输出 |
 |---|---|---|---|
-| 0. 隔离与复现记录 | 不污染原 VST 实验 | 基线提交、已有模型/数据绝对路径 | 独立 branch/worktree、manifest |
-| 1. 离线轨迹转反思请求 | 给 Teacher 准备无答案信息 | 完整轨迹、预测、final reward | Analyzer prompt；reward 仅转成布尔值 |
+| 1. 离线轨迹转反思请求 | 给 Teacher 准备无答案信息 | 完整轨迹、预测、final reward | Analyzer prompt；reward 布尔值 |
 | 2. 外部 Teacher 生成反思 | 产生 SFT 标签 | 视频、轨迹、问题/选项、预测、is_correct | 严格 JSON 反思 |
-| 3. 反思 SFT | 教会 Actor 生成结构化反思 | VST-SFT conversation JSONL | SFT checkpoint |
+| 3. 反思 SFT | 教会 Actor 生成结构化反思 | VST-SFT conversation| SFT checkpoint |
 | 4. 在线视频 rollout | 生成记忆轨迹和最终答案 | 视频、问题、batch 起始 policy version | \(T-1\) 个 transition + 1 个 final row |
-| 5. reward 回填与轨迹聚合 | 把 final reward 对齐到整条轨迹 | rollout rows、final reward | 完整 `ReflectionTrajectory` |
-| 6. 冻结 Actor Analyzer | 为本次轨迹生成技能 | 完整轨迹 + is_correct | episode skill、关键步及 step skill |
+| 5. 轨迹聚合 | 把 final reward 对齐到整条轨迹 | rollout rows、final reward | 完整轨迹 |
+| 6. Analyzer反思 | 为本次轨迹生成技能 | 完整轨迹 + is_correct | episode skill、关键步及 step skill |
 | 7. 教师 top-100 与 OPD | 用技能信号监督全部 memory 步 | 原 batch、技能增强教师 batch | \(L_{OPD}\)、统计指标 |
 | 8. 联合更新 | 保留原 RL 目标并加入 OPD | VST-RL loss、OPD loss | 更新后的 Actor |
 
 ## 4. 阶段 0：隔离代码和记录复现来源
 
-### 目的
-
-从指定基线创建独立分支和 worktree，不继承其他 VST 目录的未提交文件，也不复制大型数据、模型和 checkpoint。
-
-### 输入
-
-- 源提交：`26f31d3`
-- 独立工作目录：`/home/bujunru/vlm-repro/VST-skill-opd`
-- 外部模型、数据和 checkpoint：使用绝对只读路径引用
-
-### 输出
-
-- 独立分支：`codex/vst-skill-opd`
-- 来源与资产哈希 manifest
-
-### 代码/记录位置
-
 - [`manifests/opd-foundation.json`](../manifests/opd-foundation.json)
 - [`VST-RL/recurrent/test/test_opd_trajectory.py`](../VST-RL/recurrent/test/test_opd_trajectory.py)
 
-### 验证重点
-
-- worktree 创建时 HEAD 精确指向基线。
-- 原目录未跟踪数据不会进入新分支。
-- 大型资产不复制到 Git。
 
 ## 5. 阶段 1：把离线轨迹转换为反思请求
 
@@ -93,7 +66,7 @@
 ```json
 {
   "trajectory_uid": "traj-001",
-  "policy_version": 10,
+  "policy_version": 10,（actor 参数编号）
   "observed_video": "https://.../video.mp4",
   "transitions": [
     {
@@ -112,12 +85,11 @@
 
 ### 处理规则
 
-- 本地转换器读取 `final_reward`，只用 `reward > 0` 得到 `is_correct: true/false`。
 - 发送给 Teacher 的 payload 只含：轨迹 ID、policy version、视频、transitions、query、prediction、is_correct。
-- 原始 reward、正确选项、标准答案、解析和 solution 都不会进入 Teacher 请求。
+- 原始 reward、正确选项、标准答案都不会进入 Teacher 请求。
 - 输入字段是严格白名单；多余字段会被拒绝，以防答案意外泄漏。
 
-### 输出
+### 输出（格式转化用）
 
 - `export` 模式：输出待调用请求 JSONL，不调用外部 API。
 - `import` 模式：读取已生成的响应，严格校验后输出训练 JSONL 和 seeks 文件。
@@ -135,7 +107,7 @@
 - `call --base-url`：OpenAI-compatible 服务地址。
 - 输入/输出 JSONL 路径。
 
-当前外部请求固定使用确定性生成（temperature 为 0）。smoke 使用 fixture，**不会读取 API key，也不会访问网络**。
+当前外部请求固定使用确定性生成（temperature 为 0）
 
 ## 6. 阶段 2：外部 Teacher 生成事后反思
 
@@ -190,7 +162,7 @@
 }
 ```
 
-允许的 `kind` 是 `preserve` 或 `correct`。允许的 `memory_attribute` 包括实体身份、状态变化、时间顺序、事件存在性、计数、空间关系、可见文字和压缩。响应必须是纯 JSON；Markdown 代码围栏、尾随文字、未知字段、重复/越界 transition、policy mismatch 或 query leakage 都会被拒绝。
+允许的 `kind` 是 `preserve` 或 `correct`（当前记忆是正确的值得保留还是需要修复的）。允许的 `memory_attribute` 包括实体身份、状态变化、时间顺序、事件存在性、计数、空间关系、可见文字和压缩。响应必须是纯 JSON；
 
 ### 代码位置
 
@@ -227,13 +199,10 @@
 
 启动脚本必须提供三个绝对路径：
 
-- `TRAIN_JSONL`：反思训练集。
+- `TRAIN_JSONL`：反思训练集。（把外部模型的反思保存下来了）
 - `BASE_MODEL`：基础模型或已有 checkpoint。
 - `OUTPUT_DIR`：SFT 输出目录。
 
-可选：
-
-- `NPROC_PER_NODE`：每节点进程数，默认 1。
 
 当前脚本内训练参数为：batch size 1、gradient accumulation 8、learning rate `5e-6`、1 epoch、BF16、gradient checkpointing、每 25 step 保存。需要改实验规模时，可直接修改 [`run_reflection_sft.sh`](../VST-SFT/run_reflection_sft.sh) 中这些参数。
 
@@ -241,7 +210,7 @@
 
 ### 目的
 
-严格区分“逐段写记忆”和“最终回答”，并为之后 reward 回填、Analyzer 和 OPD 保留逐行元数据。
+严格区分“逐段写记忆”和“最终回答”，并为之后 reward 回填、Analyzer 和 OPD 保留数据。
 
 ### memory turn 接口
 
@@ -250,8 +219,7 @@ input  = previous memory + current chunk + query-independent instruction
 output = generated Y_t tokens + updated memory tokens
 ```
 
-memory turn 不读取也不传递 `prompt_ids`/`question_ids`，因此不含问题、选项或答案。`TEMPLATE_TYPE_2` 已删除 `<problem>{prompt}</problem>`。
-
+memory turn 不读取也不传递 `prompt_ids`/`question_ids`，因此不含问题、选项或答案。
 ### final turn 接口
 
 ```text
@@ -296,14 +264,33 @@ policy_version
 - `max_video_frame`：最大视频帧数。
 - `prompt_type`：使用哪套 memory/final template。
 - `video_key`、`video_root`：视频字段和根路径。
+建议参数如下：
+|参数|GPU 集成 smoke 脚本|现有 VST 默认|首次正式 OPD 实验建议|
+|---|---|---|---|
+|`video_clip_token_size`|200|6000|6000|
+|`max_memorization_length|128|4000|4000|
+|`max_video_clips`|3|8|8|
+|`max_final_response_length|64|1000|1000|
+|`max_prompt_length|256|1000|1000|
+|`max_video_frame`|12|384|384|
+|`prompt_type|`type2`|`type1`|`type1`|
 
+|prompt_type类型|memory turn|final turn|
+|---|---|---|
+|type1	|只有时间戳和当前视频块	|记忆 + 当前视频块 + 问题，要求输出 \boxed{}|
+|type2	|时间戳、视频块、Streaming Thinking Rules	|记忆 + 当前视频块 + 问题，额外强调结合记忆与当前视觉细节|
+
+Streaming Thinking Rules：
+- 只记录当前视频块的新事实；
+- 不要重复历史；
+- 视频未结束前不要给最终答案。
 改变切块参数会改变 \(T\)，因此必须重新检查每条轨迹是否仍是恰好 \(T-1\) 个 memory transitions 加 1 个 final turn。
 
 ## 9. 阶段 5：final reward 回填并聚合完整轨迹
 
 ### 目的
 
-环境只对最终答案打分，但 Analyzer 需要查看完整 episode，所以必须把 final reward 与同一 `trajectory_uid` 的全部行对齐。
+把final reward 与同一 `trajectory_uid` 的全部行对齐。
 
 ### 输入
 
@@ -334,7 +321,7 @@ policy_version
 
 ### 目的
 
-不调用外部模型，用当前 batch 更新前的 Actor 生成结构化技能。因为它在本轮更新前被冻结，所以反思和教师分布来自同一个 `policy_version`。
+不调用外部模型，用当前 batch 更新前的 Actor 生成结构化技能。反思和教师分布来自同一个 `policy_version`。
 
 ### 输入
 
@@ -421,8 +408,8 @@ Analyzer 的关键步选择控制的是 step skill 放在哪里，不是 OPD 总
 response_mask
 AND memory_mask
 AND episode_mask
-AND reflection_mask
-AND metadata_mask
+AND reflection_mask（校验类）
+AND metadata_mask（校验类）
 ```
 
 `opd_key_mask` 仅用于表示关键步和统计，不在全局 OPD 的 loss gate 中。
@@ -479,13 +466,6 @@ L_total = L_VST-RL + lambda_opd * L_OPD
 - [`VST-RL/verl/workers/actor/dp_actor.py`](../VST-RL/verl/workers/actor/dp_actor.py)
 - [`VST-RL/verl/trainer/ppo/skill_opd_loss.py`](../VST-RL/verl/trainer/ppo/skill_opd_loss.py)
 
-## 13. 当前 CPU code smoke 验证了什么
-
-### 运行入口
-
-- [`VST-RL/scripts/run_skill_opd_code_smoke.py`](../VST-RL/scripts/run_skill_opd_code_smoke.py)
-- [`VST-RL/scripts/audit_skill_opd_smoke.py`](../VST-RL/scripts/audit_skill_opd_smoke.py)
-- [`docs/smoke/skill-opd-cpu-code-smoke.md`](smoke/skill-opd-cpu-code-smoke.md)
 
 ### 已验证
 
@@ -505,124 +485,10 @@ L_total = L_VST-RL + lambda_opd * L_OPD
 12. `skill_opd.enable=false` 与原路径等价。
 13. smoke 全程没有调用外部 API，也没有使用 GPU。
 
-一次已记录的 smoke 关键结果：
-
-| 指标 | 值 |
-|---|---:|
-| trajectory_count | 1 |
-| memory_transition_count | 2 |
-| final_turn_count | 1 |
-| episode_memory_row_count | 2 |
-| key_memory_row_count | 1 |
-| non_key_episode_row_count | 1 |
-| valid_token_count | 3 |
-| final_opd_token_count | 0 |
-| top_k | 100 |
-| retained_mass | 0.9191031 |
-| sft_loss | 5.2946568 |
-| rl_loss | 0.3437940 |
-| lopd_loss | 0.0342918 |
-| weighted_lopd_loss | 0.0003429 |
-| total_loss | 0.3441369 |
-| external_api_called | false |
-| gpu_used | false |
-
-完整测试结果为 `138 passed, 2 skipped`。两个 skip 是当前 CPU 环境不具备的 CUDA 路径；CPU/BF16 相关逻辑已有覆盖。
-
-Smoke 结果文件保存在仓库外：
-
-```text
-/home/bujunru/vlm-repro/skill-opd-smoke/reflection-sft-global-episode-opd-cpu.json
-SHA256: d6b9ba9ef2a868922594cb38ab83f55953d4b5d7bf7f1a15ebece369990a5b33
-```
 
 ## 14. 当前 smoke 没有验证什么
 
-以下内容不能从目前 smoke 结果推断：
-
-- 没有真实调用外部 Teacher；只验证了客户端代码存在、请求构造正确，smoke 使用 fixture。
 - 没有用真实视频做完整解码和长上下文 rollout。
 - 没有运行真实 Qwen/VST 模型的反思 SFT，也没有产出可用 checkpoint。
 - 没有评估 Actor 是否真的学会高质量反思。
 - 没有运行完整 GPU、CUDA、BF16、DeepSpeed、Ray 分布式训练。
-- 没有验证训练收敛、最终准确率提升、超参数最优性或大规模数据吞吐。
-- 没有验证外部服务的鉴权、限流、费用和网络稳定性。
-
-所以当前结论应表述为：**代码接口、数据对齐、掩码、loss 和 CPU 最小优化步骤已跑通；真实训练效果仍需后续实验验证。**
-
-## 15. 最小使用顺序
-
-### 15.1 导出 Teacher 请求，不调用外部模型
-
-```bash
-cd /home/bujunru/vlm-repro/VST-skill-opd/VST-RL
-python scripts/build_reflection_sft_data.py export \
-  --trajectory-jsonl /absolute/path/trajectories.jsonl \
-  --requests-jsonl /absolute/path/teacher_requests.jsonl
-```
-
-### 15.2 导入外部生成的反思
-
-```bash
-python scripts/build_reflection_sft_data.py import \
-  --trajectory-jsonl /absolute/path/trajectories.jsonl \
-  --responses-jsonl /absolute/path/teacher_responses.jsonl \
-  --output-jsonl /absolute/path/reflection_sft.jsonl
-```
-
-如需让代码直接调用 OpenAI-compatible 外部服务，使用 `call` 子命令并提供 model/API key/base URL。该路径未被当前 smoke 实际调用。
-
-### 15.3 运行反思 SFT
-
-```bash
-cd /home/bujunru/vlm-repro/VST-skill-opd/VST-SFT
-TRAIN_JSONL=/absolute/path/reflection_sft.jsonl \
-BASE_MODEL=/absolute/path/base_model \
-OUTPUT_DIR=/absolute/path/reflection_sft_checkpoint \
-NPROC_PER_NODE=1 \
-bash run_reflection_sft.sh
-```
-
-### 15.4 启动在线 OPD 前的配置
-
-1. 把 `actor_rollout_ref.model.path` 指向反思 SFT checkpoint。
-2. 设置 `skill_opd.enable=true`。
-3. 保持 `skill_opd.mode=global_episode`。
-4. 首次真实运行建议保持 `top_k=100`、`lambda_opd=0.01`，先观察 retained mass、有效 token 数和 loss 比例。
-
-### 15.5 重新运行 CPU smoke
-
-```bash
-cd /home/bujunru/vlm-repro/VST-skill-opd/VST-RL
-python scripts/run_skill_opd_code_smoke.py \
-  --output /absolute/path/smoke.json
-python scripts/audit_skill_opd_smoke.py \
-  --metrics /absolute/path/smoke.json
-pytest -q
-```
-
-## 16. 新手排查清单
-
-如果在线实验不符合预期，按以下顺序检查：
-
-1. 每条 trajectory 是否恰好有一个 `final_mask=True`。
-2. transition index 是否从 0 连续到 \(T-2\)。
-3. memory prompt 是否意外含有问题、选项或答案。
-4. final chunk \(C_T\) 是否只在 final turn 出现。
-5. 同一 batch 的 policy version 是否一致。
-6. Analyzer 输入是否只有 `is_correct`，没有正确答案或 raw reward。
-7. reflection 是否被 schema 或 leakage validator 拒绝。
-8. 非关键 memory row 是否仍有 episode skill 和有效 OPD mask。
-9. final row 的 OPD token 数是否为 0。
-10. retained mass 是否过低；若过低再考虑提高 `top_k`。
-11. `lambda_opd * L_OPD` 是否与原 RL loss 同量级或过大。
-12. 真实训练前先确认 `skill_opd.enable=false` 能复现原 VST-RL 行为。
-
-## 17. 设计与测试的进一步资料
-
-- [`docs/superpowers/specs/2026-09-08-reflection-sft-global-episode-opd-design.md`](superpowers/specs/2026-09-08-reflection-sft-global-episode-opd-design.md)：设计决策和边界。
-- [`docs/superpowers/plans/2026-09-08-reflection-sft-global-episode-opd.md`](superpowers/plans/2026-09-08-reflection-sft-global-episode-opd.md)：实现计划。
-- [`VST-RL/tests/test_reflection_sft.py`](../VST-RL/tests/test_reflection_sft.py)：离线 Teacher/SFT 数据测试。
-- [`VST-RL/tests/test_skill_opd_loss.py`](../VST-RL/tests/test_skill_opd_loss.py)：top-k OPD loss 测试。
-- [`VST-RL/tests/test_skill_opd_smoke_audit.py`](../VST-RL/tests/test_skill_opd_smoke_audit.py)：smoke 审计测试。
-- [`VST-RL/recurrent/test/test_opd_trajectory.py`](../VST-RL/recurrent/test/test_opd_trajectory.py)：轨迹、边界、manifest 测试。
